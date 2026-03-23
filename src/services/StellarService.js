@@ -423,6 +423,36 @@ class StellarService extends StellarServiceInterface {
       };
     }, 'verifyTransaction');
   }
+
+  /**
+   * Merge collected signatures and submit a multi-sig transaction to Stellar.
+   *
+   * @param {Object}   params
+   * @param {string}   params.transaction_xdr    - Base-64 XDR of the unsigned transaction
+   * @param {string}   params.network_passphrase - Stellar network passphrase
+   * @param {Object[]} params.signatures         - [{signer, signed_xdr}]
+   * @returns {Promise<{transactionId: string, ledger: number}>}
+   */
+  async submitMultiSigTransaction({ transaction_xdr, network_passphrase, signatures }) {
+    return StellarErrorHandler.wrap(async () => {
+      const StellarSdk = require('@stellar/stellar-sdk');
+      let envelope = StellarSdk.TransactionBuilder.fromXDR(transaction_xdr, network_passphrase);
+
+      for (const { signed_xdr } of signatures) {
+        const signed = StellarSdk.TransactionBuilder.fromXDR(signed_xdr, network_passphrase);
+        for (const sig of signed.signatures) {
+          envelope.addSignature(sig.hint(), sig.signature());
+        }
+      }
+
+      const result = await this._executeWithRetry(
+        () => this.server.submitTransaction(envelope),
+        'submitMultiSigTransaction'
+      );
+
+      return { transactionId: result.hash, ledger: result.ledger };
+    }, 'submitMultiSigTransaction');
+  }
 }
 
 module.exports = StellarService;

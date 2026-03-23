@@ -13,10 +13,14 @@ const express = require('express');
 const router = express.Router();
 const Transaction = require('./models/transaction');
 const TransactionSyncService = require('../services/TransactionSyncService');
+const MultiSigService = require('../services/MultiSigService');
 const { checkPermission } = require('../middleware/rbac');
 const { PERMISSIONS } = require('../utils/permissions');
 const { validatePagination } = require('../utils/validationHelpers');
 const { validateSchema } = require('../middleware/schemaValidation');
+const serviceContainer = require('../config/serviceContainer');
+
+const multiSigService = new MultiSigService(serviceContainer.getStellarService());
 
 const transactionListQuerySchema = validateSchema({
   query: {
@@ -121,4 +125,44 @@ router.post(
 );
 
 
+// ─── Multi-Signature Transaction Endpoints ───────────────────────────────────
+
+/**
+ * POST /transactions/multisig
+ * Create a new pending multi-sig transaction.
+ */
+router.post('/multisig', checkPermission(PERMISSIONS.TRANSACTIONS_SYNC), async (req, res, next) => {
+  try {
+    const tx = await multiSigService.createMultiSigTransaction(req.body);
+    return res.status(201).json({ success: true, data: tx });
+  } catch (err) { next(err); }
+});
+
+/**
+ * POST /transactions/:id/sign
+ * Add a signature. Auto-submits when threshold is met.
+ */
+router.post('/:id/sign', checkPermission(PERMISSIONS.TRANSACTIONS_SYNC), async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ success: false, error: { code: 'INVALID_ID', message: 'id must be an integer' } });
+    const tx = await multiSigService.addSignature(id, req.body.signer, req.body.signed_xdr);
+    return res.status(200).json({ success: true, data: tx });
+  } catch (err) { next(err); }
+});
+
+/**
+ * GET /transactions/:id/signatures
+ * Get signature collection status.
+ */
+router.get('/:id/signatures', checkPermission(PERMISSIONS.TRANSACTIONS_READ), async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ success: false, error: { code: 'INVALID_ID', message: 'id must be an integer' } });
+    const data = await multiSigService.getSignatures(id);
+    return res.status(200).json({ success: true, data });
+  } catch (err) { next(err); }
+});
+
 module.exports = router;
+

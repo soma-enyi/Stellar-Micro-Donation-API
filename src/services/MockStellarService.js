@@ -845,6 +845,30 @@ class MockStellarService extends StellarServiceInterface {
    * Clear all mock data (useful for testing)
    * @private
    */
+  /**
+   * Simulate submitting a fully-signed multi-sig transaction.
+   *
+   * @param {Object}   params
+   * @param {string}   params.transaction_xdr    - Base-64 XDR of the unsigned transaction
+   * @param {string}   params.network_passphrase - Stellar network passphrase
+   * @param {Object[]} params.signatures         - [{signer, signed_xdr}]
+   * @returns {Promise<{transactionId: string, ledger: number}>}
+   */
+  async submitMultiSigTransaction({ transaction_xdr, network_passphrase, signatures }) {
+    this._simulateFailure();
+
+    if (!transaction_xdr || !network_passphrase)
+      throw new ValidationError('transaction_xdr and network_passphrase are required');
+    if (!Array.isArray(signatures) || signatures.length === 0)
+      throw new ValidationError('At least one signature is required');
+
+    const txId = crypto.randomBytes(32).toString('hex');
+    const ledger = Math.floor(Math.random() * 1000000) + 1000000;
+
+    log.info('MOCK_STELLAR_SERVICE', 'Multi-sig transaction submitted', { txId, ledger, signerCount: signatures.length });
+    return { transactionId: txId, ledger };
+  }
+
   _clearAllData() {
     this.wallets.clear();
     this.transactions.clear();
