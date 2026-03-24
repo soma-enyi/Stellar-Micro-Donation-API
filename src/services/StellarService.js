@@ -288,7 +288,7 @@ class StellarService extends StellarServiceInterface {
    * @param {string} [params.memo] - Optional transaction memo (max 28 bytes)
    * @returns {Promise<{transactionId: string, ledger: number}>}
    */
-  async sendDonation({ sourceSecret, destinationPublic, amount, memo = '' }) {
+  async sendDonation({ sourceSecret, destinationPublic, amount, memo = '', memoType = 'text' }) {
     return StellarErrorHandler.wrap(async () => {
       const sourceKeypair = StellarSdk.Keypair.fromSecret(sourceSecret);
       const sourceAccount = await this._executeWithRetry(
@@ -308,7 +308,19 @@ class StellarService extends StellarServiceInterface {
         .setTimeout(30);
 
       if (memo) {
-        transaction.addMemo(StellarSdk.Memo.text(memo));
+        switch (memoType) {
+          case 'hash':
+            transaction.addMemo(StellarSdk.Memo.hash(Buffer.from(memo, 'hex')));
+            break;
+          case 'return':
+            transaction.addMemo(StellarSdk.Memo.return(Buffer.from(memo, 'hex')));
+            break;
+          case 'id':
+            transaction.addMemo(StellarSdk.Memo.id(memo.toString()));
+            break;
+          default: // 'text'
+            transaction.addMemo(StellarSdk.Memo.text(memo));
+        }
       }
 
       const builtTx = transaction.build();
