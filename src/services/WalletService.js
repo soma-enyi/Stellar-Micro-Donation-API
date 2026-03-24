@@ -11,7 +11,7 @@
 
 const Wallet = require('../routes/models/wallet');
 const Database = require('../utils/database');
-const { sanitizeLabel, sanitizeName } = require('../utils/sanitizer');
+const { sanitizeLabel, sanitizeName, sanitizeStellarAddress } = require('../utils/sanitizer');
 const { ValidationError, NotFoundError, ERROR_CODES } = require('../utils/errors');
 const { paginateCollection } = require('../utils/pagination');
 const log = require('../utils/log');
@@ -35,7 +35,10 @@ class WalletService {
       throw new ValidationError('Missing required field: address', null, ERROR_CODES.MISSING_REQUIRED_FIELD);
     }
 
-    const existingWallet = Wallet.getByAddress(address);
+    // Sanitize wallet address to prevent injection attacks
+    const sanitizedAddress = sanitizeStellarAddress(address);
+
+    const existingWallet = Wallet.getByAddress(sanitizedAddress);
     if (existingWallet) {
       throw new ValidationError(
         'Wallet with this address already exists',
@@ -47,6 +50,10 @@ class WalletService {
     const sanitizedLabel = label ? sanitizeLabel(label) : null;
     const sanitizedOwnerName = ownerName ? sanitizeName(ownerName) : null;
 
+    return Wallet.create({ 
+      address: sanitizedAddress, 
+      label: sanitizedLabel, 
+      ownerName: sanitizedOwnerName 
     const wallet = Wallet.create({
       address,
       label: sanitizedLabel,

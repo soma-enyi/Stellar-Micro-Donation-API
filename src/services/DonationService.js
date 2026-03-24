@@ -15,7 +15,7 @@ const encryption = require('../utils/encryption');
 const donationValidator = require('../utils/donationValidator');
 const memoValidator = require('../utils/memoValidator');
 const { calculateAnalyticsFee } = require('../utils/feeCalculator');
-const { sanitizeIdentifier } = require('../utils/sanitizer');
+const { sanitizeIdentifier, sanitizeMemo } = require('../utils/sanitizer');
 const { TRANSACTION_STATES } = require('../utils/transactionStateMachine');
 const { ValidationError, NotFoundError, ERROR_CODES } = require('../utils/errors');
 const LimitService = require('./LimitService');
@@ -111,6 +111,9 @@ class DonationService {
     // Check per-wallet donation limits
     await LimitService.checkLimits(senderId, amount);
 
+    // Sanitize memo to prevent XSS and injection attacks
+    const sanitizedMemo = memo ? sanitizeMemo(memo) : undefined;
+
     // Decrypt sender's secret key
     const secret = encryption.decrypt(sender.encryptedSecret);
 
@@ -118,12 +121,12 @@ class DonationService {
       requestId
     });
 
-    // Execute Stellar transaction
+    // Execute Stellar transaction with sanitized memo
     const stellarResult = await this.stellarService.sendDonation({
       sourceSecret: secret,
       destinationPublic: receiver.publicKey,
       amount: amount,
-      memo: memo
+      memo: sanitizedMemo
     });
 
     log.debug('DONATION_SERVICE', 'Stellar transaction successful', {
@@ -132,10 +135,10 @@ class DonationService {
       ledger: stellarResult.ledger
     });
 
-    // Record in database — store stellar_tx_id for cross-referencing
+    // Record in database with sanitized memo
     const dbResult = await Database.run(
       'INSERT INTO transactions (senderId, receiverId, amount, memo, timestamp, idempotencyKey, stellar_tx_id) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)',
-      [senderId, receiverId, amount, memo, idempotencyKey, stellarResult.transactionId]
+      [senderId, receiverId, amount, sanitizedMemo, idempotencyKey, stellarResult.transactionId]
     );
 
     // Record in JSON with state transitions
