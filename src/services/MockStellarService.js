@@ -476,6 +476,24 @@ class MockStellarService extends StellarServiceInterface {
   }
 
   /**
+   * Fund a new account via Friendbot (testnet only).
+   * On mainnet, logs a warning and returns { funded: false }.
+   * @param {string} publicKey - Stellar public key
+   * @returns {Promise<{funded: boolean, balance?: string}>}
+   */
+  async fundWithFriendbot(publicKey) {
+    if (this.network !== 'testnet') {
+      return { funded: false };
+    }
+    try {
+      const result = await this.fundTestnetWallet(publicKey);
+      return { funded: true, balance: result.balance };
+    } catch (err) {
+      return { funded: false, error: err.message };
+    }
+  }
+
+  /**
    * Check if an account is funded
    * @param {string} publicKey - Stellar public key
    * @returns {Promise<{funded: boolean, balance: string, exists: boolean}>}
@@ -627,6 +645,21 @@ class MockStellarService extends StellarServiceInterface {
         confirmedAt: transaction.confirmedAt,
       };
     });
+  }
+
+  /**
+   * Send multiple payments from the same source in a single mock batch transaction.
+   * @param {string} sourceSecret
+   * @param {Array<{destinationPublic: string, amount: string}>} payments
+   * @returns {Promise<{transactionId: string, ledger: number}>}
+   */
+  async sendBatchDonations(sourceSecret, payments) {
+    // Reuse sendDonation for each payment sequentially in mock mode
+    let lastResult;
+    for (const p of payments) {
+      lastResult = await this.sendDonation({ sourceSecret, destinationPublic: p.destinationPublic, amount: p.amount, memo: p.memo });
+    }
+    return { transactionId: lastResult.transactionId, ledger: lastResult.ledger };
   }
 
   /**
@@ -855,6 +888,30 @@ class MockStellarService extends StellarServiceInterface {
    * Clear all mock data (useful for testing)
    * @private
    */
+  /**
+   * Simulate submitting a fully-signed multi-sig transaction.
+   *
+   * @param {Object}   params
+   * @param {string}   params.transaction_xdr    - Base-64 XDR of the unsigned transaction
+   * @param {string}   params.network_passphrase - Stellar network passphrase
+   * @param {Object[]} params.signatures         - [{signer, signed_xdr}]
+   * @returns {Promise<{transactionId: string, ledger: number}>}
+   */
+  async submitMultiSigTransaction({ transaction_xdr, network_passphrase, signatures }) {
+    this._simulateFailure();
+
+    if (!transaction_xdr || !network_passphrase)
+      throw new ValidationError('transaction_xdr and network_passphrase are required');
+    if (!Array.isArray(signatures) || signatures.length === 0)
+      throw new ValidationError('At least one signature is required');
+
+    const txId = crypto.randomBytes(32).toString('hex');
+    const ledger = Math.floor(Math.random() * 1000000) + 1000000;
+
+    log.info('MOCK_STELLAR_SERVICE', 'Multi-sig transaction submitted', { txId, ledger, signerCount: signatures.length });
+    return { transactionId: txId, ledger };
+  }
+
   _clearAllData() {
     this.wallets.clear();
     this.transactions.clear();
@@ -1044,6 +1101,32 @@ class MockStellarService extends StellarServiceInterface {
     });
 
     return { transactionId: txId, ledger };
+  }
+
+  /**
+   * Estimate the transaction fee for a given number of operations.
+   * Simulates fee variations including surge pricing.
+   * @param {number} [operationCount=1]
+   * @returns {Promise<{feeStroops: number, feeXLM: string, baseFee: number, surgeProtection: boolean, surgeMultiplier: number}>}
+   */
+  async estimateFee(operationCount = 1) {
+    await this._simulateNetworkDelay();
+    this._simulateFailure();
+
+    const BASE_FEE_STROOPS = 100;
+    // Simulate fee multiplier: normally 1x, occasionally surge (configurable via config.feeMultiplier)
+    const multiplier = this.config.feeMultiplier !== undefined ? this.config.feeMultiplier : 1;
+    const recommendedFee = Math.round(BASE_FEE_STROOPS * multiplier);
+    const totalFeeStroops = recommendedFee * operationCount;
+    const surgeProtection = multiplier >= 5;
+
+    return {
+      feeStroops: totalFeeStroops,
+      feeXLM: (totalFeeStroops / 1e7).toFixed(7),
+      baseFee: BASE_FEE_STROOPS,
+      surgeProtection,
+      surgeMultiplier: parseFloat(multiplier.toFixed(2)),
+    };
   }
 
   /**

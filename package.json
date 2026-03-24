@@ -7,6 +7,7 @@
     "start": "node src/routes/app.js",
     "init-db": "node src/scripts/initDB.js",
     "migrate:memo": "node src/scripts/addMemoColumn.js",
+    "migrate:currency": "node src/scripts/migrations/addCurrencyColumns.js",
     "test": "jest",
     "test:coverage": "jest --coverage",
     "test:coverage:ci": "jest --coverage --ci --maxWorkers=2",

@@ -17,7 +17,7 @@ const { checkPermission } = require('../middleware/rbac');
 const { PERMISSIONS } = require('../utils/permissions');
 const { ValidationError, ERROR_CODES } = require('../utils/errors');
 const log = require('../utils/log');
-const { donationRateLimiter, verificationRateLimiter } = require('../middleware/rateLimiter');
+const { donationRateLimiter, verificationRateLimiter, batchRateLimiter } = require('../middleware/rateLimiter');
 const { validateRequiredFields, validateFloat, validateInteger } = require('../utils/validationHelpers');
 const { validateSchema } = require('../middleware/schemaValidation');
 const { TRANSACTION_STATES } = require('../utils/transactionStateMachine');
@@ -58,6 +58,12 @@ const createDonationSchema = validateSchema({
   body: {
     fields: {
       amount: { type: 'numberString', required: true, min: 0.0000001 },
+      currency: {
+        type: 'string',
+        required: false,
+        maxLength: 10,
+        nullable: true,
+      },
       donor: {
         type: 'string',
         required: false,
@@ -280,12 +286,63 @@ router.post('/send', donationRateLimiter, requireIdempotency, sendDonationSchema
 });
 
 /**
+ * POST /donations/batch
+ * Create up to 100 donations in a single request.
+ * Donations with the same donor are grouped into multi-operation Stellar transactions.
+ * Rate limited: 10 batch requests per minute per IP.
+ */
+router.post('/batch', batchRateLimiter, requireApiKey, async (req, res, next) => {
+  try {
+    const { donations } = req.body;
+
+    if (!Array.isArray(donations) || donations.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'donations must be a non-empty array' }
+      });
+    }
+
+    if (donations.length > 100) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'donations array must not exceed 100 items' }
+      });
+    }
+
+    // Basic per-item validation
+    for (let i = 0; i < donations.length; i++) {
+      const d = donations[i];
+      if (!d.amount || !d.recipient) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'VALIDATION_ERROR', message: `donations[${i}]: amount and recipient are required` }
+        });
+      }
+    }
+
+    const results = await donationService.processBatch(donations);
+
+    const succeeded = results.filter(r => r.success).length;
+    const failed = results.length - succeeded;
+
+    res.status(207).json({
+      success: true,
+      summary: { total: results.length, succeeded, failed },
+      results
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * POST /donations
  * Create a non-custodial donation record
  */
 router.post('/', donationRateLimiter, requireApiKey, requireIdempotency, createDonationSchema, async (req, res, next) => {
   try {
     const { amount, donor, recipient, memo, memoType } = req.body;
+    const { amount, currency, donor, recipient, memo } = req.body;
 
     // Basic validation
     if (!amount || !recipient) {
@@ -326,12 +383,21 @@ router.post('/', donationRateLimiter, requireApiKey, requireIdempotency, createD
     // Delegate to service
     const transaction = await donationService.createDonationRecord({
       amount: amountValidation.value,
+      currency: currency || 'XLM',
       donor,
       recipient: resolvedRecipient,
       memo,
       memoType: memoType || 'text',
       idempotencyKey: req.idempotency.key
     });
+
+    // Estimate fee for informational purposes (non-blocking)
+    let feeEstimate = null;
+    try {
+      feeEstimate = await stellarService.estimateFee(1);
+    } catch (_err) {
+      // Fee estimation is best-effort; don't fail the request
+    }
 
     // Mark processing complete
     if (req.markLifecycleStage) {
@@ -342,12 +408,53 @@ router.post('/', donationRateLimiter, requireApiKey, requireIdempotency, createD
       success: true,
       data: {
         verified: true,
-        transactionHash: transaction.stellarTxId || transaction.id
+        transactionHash: transaction.stellarTxId || transaction.id,
+        ...(feeEstimate && {
+          estimatedFee: feeEstimate.feeStroops,
+          estimatedFeeXLM: feeEstimate.feeXLM,
+          ...(feeEstimate.surgeProtection && {
+            feeWarning: 'Network fees are elevated (surge pricing active).'
+          }),
+        }),
       }
     };
 
     await storeIdempotencyResponse(req, response);
     res.status(201).json(response);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /donations/fee-estimate
+ * Returns the current estimated transaction fee from the Stellar network.
+ * Query params:
+ *   - operations: number of operations (default: 1)
+ */
+router.get('/fee-estimate', checkPermission(PERMISSIONS.DONATIONS_READ), async (req, res, next) => {
+  try {
+    const operationCount = Math.max(1, parseInt(req.query.operations, 10) || 1);
+    const estimate = await stellarService.estimateFee(operationCount);
+
+    if (req.markLifecycleStage) {
+      req.markLifecycleStage(LIFECYCLE_STAGES.PROCESSED);
+    }
+
+    res.json({
+      success: true,
+      data: {
+        estimatedFee: estimate.feeStroops,
+        estimatedFeeXLM: estimate.feeXLM,
+        baseFee: estimate.baseFee,
+        operationCount,
+        surgeProtection: estimate.surgeProtection,
+        surgeMultiplier: estimate.surgeMultiplier,
+        ...(estimate.surgeProtection && {
+          warning: 'Network fees are elevated (surge pricing active). Fees are significantly above baseline.'
+        }),
+      }
+    });
   } catch (error) {
     next(error);
   }

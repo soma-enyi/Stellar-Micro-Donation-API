@@ -91,6 +91,20 @@ module.exports = async () => {
       details TEXT,
       timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
+    await Database.run(`CREATE TABLE IF NOT EXISTS multisig_transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      transaction_xdr TEXT NOT NULL,
+      network_passphrase TEXT NOT NULL,
+      required_signers INTEGER NOT NULL,
+      signer_keys TEXT NOT NULL,
+      collected_signatures TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'pending',
+      stellar_tx_hash TEXT,
+      stellar_ledger INTEGER,
+      metadata TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
   } catch (e) {
     // Ignore errors - tables may already exist
   }

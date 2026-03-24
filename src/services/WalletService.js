@@ -11,26 +11,34 @@
 
 const Wallet = require('../routes/models/wallet');
 const Database = require('../utils/database');
-const { sanitizeLabel, sanitizeName } = require('../utils/sanitizer');
+const { sanitizeLabel, sanitizeName, sanitizeStellarAddress } = require('../utils/sanitizer');
 const { ValidationError, NotFoundError, ERROR_CODES } = require('../utils/errors');
 const { paginateCollection } = require('../utils/pagination');
+const log = require('../utils/log');
 
 class WalletService {
+  constructor(stellarService = null) {
+    this.stellarService = stellarService;
+  }
+
   /**
-   * Create a new wallet with metadata
-   * @param {Object} params - Wallet parameters
-   * @param {string} params.address - Wallet address
-   * @param {string} params.label - Optional wallet label
-   * @param {string} params.ownerName - Optional owner name
-   * @returns {Object} Created wallet
-   * @throws {ValidationError} If address is missing or wallet already exists
+   * Create a new wallet with metadata.
+   * On testnet, automatically funds the new account via Friendbot.
+   * @param {Object} params
+   * @param {string} params.address - Wallet address (Stellar public key)
+   * @param {string} [params.label]
+   * @param {string} [params.ownerName]
+   * @returns {Promise<Object>} Created wallet with `funded` field
    */
-  createWallet({ address, label, ownerName }) {
+  async createWallet({ address, label, ownerName }) {
     if (!address) {
       throw new ValidationError('Missing required field: address', null, ERROR_CODES.MISSING_REQUIRED_FIELD);
     }
 
-    const existingWallet = Wallet.getByAddress(address);
+    // Sanitize wallet address to prevent injection attacks
+    const sanitizedAddress = sanitizeStellarAddress(address);
+
+    const existingWallet = Wallet.getByAddress(sanitizedAddress);
     if (existingWallet) {
       throw new ValidationError(
         'Wallet with this address already exists',
@@ -39,15 +47,33 @@ class WalletService {
       );
     }
 
-    // Sanitize user-provided metadata
     const sanitizedLabel = label ? sanitizeLabel(label) : null;
     const sanitizedOwnerName = ownerName ? sanitizeName(ownerName) : null;
 
     return Wallet.create({ 
-      address, 
+      address: sanitizedAddress, 
       label: sanitizedLabel, 
       ownerName: sanitizedOwnerName 
+    const wallet = Wallet.create({
+      address,
+      label: sanitizedLabel,
+      ownerName: sanitizedOwnerName
     });
+
+    // Auto-fund on testnet via Friendbot
+    let funded = false;
+    if (this.stellarService) {
+      const fundResult = await this.stellarService.fundWithFriendbot(address);
+      funded = fundResult.funded;
+      if (!funded) {
+        log.warn('WALLET_SERVICE', 'Friendbot funding skipped or failed', {
+          address,
+          reason: fundResult.error || 'non-testnet network'
+        });
+      }
+    }
+
+    return { ...wallet, funded };
   }
 
   /**

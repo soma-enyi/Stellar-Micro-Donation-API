@@ -39,6 +39,9 @@ const {
   logStartupDiagnostics,
   logShutdownDiagnostics,
 } = require("../utils/startupDiagnostics");
+const { parseCursorPaginationQuery } = require('../utils/pagination');
+const AuditLogService = require('../services/AuditLogService');
+const auditLogRetentionService = require('../services/AuditLogRetentionService');
 
 const app = express();
 
@@ -59,7 +62,9 @@ app.use(createCorsMiddleware());
 // Payload size limit (must be before body parsers)
 app.use(payloadSizeLimiter);
 
-app.use(express.json());
+app.use(express.json({
+  verify: (req, _res, buf) => { req.rawBody = buf.toString('utf8'); }
+}));
 app.use(express.urlencoded({ extended: true }));
 
 // Request/Response logging middleware
@@ -87,6 +92,37 @@ app.use('/api-keys', apiKeysRoutes);
 app.use('/fees', feesRoutes);
 app.use('/webhooks', webhooksRoutes);
 
+// Exchange rates endpoint
+app.get('/exchange-rates', async (req, res) => {
+  try {
+    const priceOracle = require('../services/PriceOracleService');
+    const rates = await priceOracle.getRates();
+    res.json({
+      success: true,
+      data: {
+        base: 'XLM',
+        rates,
+        supportedCurrencies: ['XLM', ...priceOracle.SUPPORTED_CURRENCIES.map(c => c.toUpperCase())],
+        cachedAt: new Date().toISOString(),
+      },
+        cachedAt: new Date().toISOString()
+      }
+    });
+  } catch (err) {
+    log.error('APP', 'Failed to fetch exchange rates', { error: err.message });
+    res.status(503).json({
+      success: false,
+      error: { code: 'EXCHANGE_RATE_UNAVAILABLE', message: err.message },
+    });
+  }
+});
+
+      error: { code: 'EXCHANGE_RATE_UNAVAILABLE', message: err.message }
+    });
+  }
+});
+
+// Health check endpoint
 // Health check endpoints
 app.get('/health', async (req, res) => {
   const health = await HealthCheckService.getFullHealth(stellarService);
@@ -304,6 +340,7 @@ async function startServer() {
     const server = app.listen(PORT, () => {
       recurringDonationScheduler.start();
       reconciliationService.start();
+      auditLogRetentionService.start();
 
       const { startCleanup } = require('../utils/replayDetector');
       const replayConfig = require('../config/replayDetection');
@@ -333,6 +370,7 @@ async function startServer() {
         log.info("SHUTDOWN", "HTTP server closed");
         recurringDonationScheduler.stop();
         reconciliationService.stop();
+        auditLogRetentionService.stop();
 
         if (replayCleanupTimer) {
           clearInterval(replayCleanupTimer);

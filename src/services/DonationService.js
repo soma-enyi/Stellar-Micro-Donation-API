@@ -15,13 +15,15 @@ const encryption = require('../utils/encryption');
 const donationValidator = require('../utils/donationValidator');
 const memoValidator = require('../utils/memoValidator');
 const { calculateAnalyticsFee } = require('../utils/feeCalculator');
-const { sanitizeIdentifier } = require('../utils/sanitizer');
+const { sanitizeIdentifier, sanitizeMemo } = require('../utils/sanitizer');
 const { TRANSACTION_STATES } = require('../utils/transactionStateMachine');
 const { ValidationError, NotFoundError, ERROR_CODES } = require('../utils/errors');
 const LimitService = require('./LimitService');
 const log = require('../utils/log');
+const priceOracle = require('./PriceOracleService');
 const { buildOverpaymentRecord } = require('../utils/overpaymentDetector');
 const memoCollisionDetector = require('../utils/memoCollisionDetector');
+const priceOracle = require('./PriceOracleService');
 
 class DonationService {
   constructor(stellarService) {
@@ -109,6 +111,9 @@ class DonationService {
     // Check per-wallet donation limits
     await LimitService.checkLimits(senderId, amount);
 
+    // Sanitize memo to prevent XSS and injection attacks
+    const sanitizedMemo = memo ? sanitizeMemo(memo) : undefined;
+
     // Decrypt sender's secret key
     const secret = encryption.decrypt(sender.encryptedSecret);
 
@@ -116,12 +121,12 @@ class DonationService {
       requestId
     });
 
-    // Execute Stellar transaction
+    // Execute Stellar transaction with sanitized memo
     const stellarResult = await this.stellarService.sendDonation({
       sourceSecret: secret,
       destinationPublic: receiver.publicKey,
       amount: amount,
-      memo: memo
+      memo: sanitizedMemo
     });
 
     log.debug('DONATION_SERVICE', 'Stellar transaction successful', {
@@ -130,10 +135,10 @@ class DonationService {
       ledger: stellarResult.ledger
     });
 
-    // Record in database — store stellar_tx_id for cross-referencing
+    // Record in database with sanitized memo
     const dbResult = await Database.run(
       'INSERT INTO transactions (senderId, receiverId, amount, memo, timestamp, idempotencyKey, stellar_tx_id) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)',
-      [senderId, receiverId, amount, memo, idempotencyKey, stellarResult.transactionId]
+      [senderId, receiverId, amount, sanitizedMemo, idempotencyKey, stellarResult.transactionId]
     );
 
     // Record in JSON with state transitions
@@ -349,7 +354,8 @@ class DonationService {
   /**
    * Create a non-custodial donation record
    * @param {Object} params - Donation parameters
-   * @param {number} params.amount - Donation amount
+   * @param {number} params.amount - Donation amount (in the specified currency)
+   * @param {string} [params.currency='XLM'] - Currency of the amount (XLM, USD, EUR, GBP)
    * @param {string} params.donor - Donor identifier
    * @param {string} params.recipient - Recipient identifier
    * @param {string} params.memo - Optional memo
@@ -367,8 +373,24 @@ class DonationService {
       throw new ValidationError('Sender and recipient wallets must be different');
     }
 
-    // Validate amount and limits
-    this.validateDonationAmount(amount, sanitizedDonor);
+    // Currency conversion
+    const normalizedCurrency = currency.toUpperCase();
+    let xlmAmount = amount;
+    if (normalizedCurrency !== 'XLM') {
+      try {
+        xlmAmount = await priceOracle.convertToXLM(amount, normalizedCurrency);
+        log.info('DONATION_SERVICE', 'Currency converted', {
+          originalAmount: amount,
+          originalCurrency: normalizedCurrency,
+          xlmAmount
+        });
+      } catch (err) {
+        throw new ValidationError(`Currency conversion failed: ${err.message}`);
+      }
+    }
+
+    // Validate XLM amount and limits
+    this.validateDonationAmount(xlmAmount, sanitizedDonor);
 
     // Validate memo with type-aware validation
     const memoResult = memoType && memoType !== 'text'
@@ -380,7 +402,7 @@ class DonationService {
     }
 
     // Calculate analytics fee
-    const feeCalculation = calculateAnalyticsFee(amount);
+    const feeCalculation = calculateAnalyticsFee(xlmAmount);
 
     // Detect overpayment — compare received amount vs (donation + expected fee)
     // receivedAmount defaults to amount when not explicitly provided (no overpayment)
@@ -404,7 +426,9 @@ class DonationService {
 
     // Create transaction record
     const transaction = Transaction.create({
-      amount: amount,
+      amount: xlmAmount,
+      originalAmount: normalizedCurrency !== 'XLM' ? amount : undefined,
+      originalCurrency: normalizedCurrency !== 'XLM' ? normalizedCurrency : undefined,
       donor: sanitizedDonor,
       recipient: sanitizedRecipient,
       memo: memoResult.sanitized,
@@ -446,6 +470,89 @@ class DonationService {
     }
 
     return transaction;
+  }
+
+  /**
+   * Process a batch of donations (up to 100).
+   * Donations sharing the same donor are grouped into a single multi-operation Stellar transaction.
+   * @param {Array<{amount, currency, donor, recipient, memo, idempotencyKey}>} donations
+   * @returns {Promise<Array<{index, success, data?, error?}>>}
+   */
+  async processBatch(donations) {
+    // Group by donor (same sender → single multi-op tx)
+    const groups = new Map();
+    donations.forEach((d, index) => {
+      const key = d.donor || 'Anonymous';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push({ ...d, index });
+    });
+
+    const results = new Array(donations.length);
+
+    await Promise.all([...groups.values()].map(async (group) => {
+      // Resolve & validate each donation in the group
+      const prepared = [];
+      for (const d of group) {
+        try {
+          const sanitizedDonor = d.donor ? sanitizeIdentifier(d.donor) : 'Anonymous';
+          const sanitizedRecipient = sanitizeIdentifier(d.recipient);
+          const normalizedCurrency = (d.currency || 'XLM').toUpperCase();
+          let xlmAmount = parseFloat(d.amount);
+
+          if (normalizedCurrency !== 'XLM') {
+            xlmAmount = await priceOracle.convertToXLM(d.amount, normalizedCurrency);
+          }
+
+          this.validateDonationAmount(xlmAmount, sanitizedDonor);
+          const memoResult = this.validateAndSanitizeMemo(d.memo);
+
+          prepared.push({ d, sanitizedDonor, sanitizedRecipient, xlmAmount, memo: memoResult.sanitized });
+        } catch (err) {
+          results[d.index] = { index: d.index, success: false, error: { code: err.code || 'VALIDATION_ERROR', message: err.message } };
+        }
+      }
+
+      if (prepared.length === 0) return;
+
+      // Attempt multi-op Stellar transaction for the whole group
+      try {
+        const sender = await this.getUserById(prepared[0].sanitizedDonor, 'Donor').catch(() => null);
+        let stellarResult = null;
+
+        if (sender && sender.encryptedSecret) {
+          const secret = encryption.decrypt(sender.encryptedSecret);
+          const payments = prepared.map(p => ({
+            destinationPublic: p.sanitizedRecipient,
+            amount: p.xlmAmount.toString(),
+            memo: p.memo,
+          }));
+          stellarResult = await this.stellarService.sendBatchDonations(secret, payments);
+        }
+
+        for (const p of prepared) {
+          const feeCalc = calculateAnalyticsFee(p.xlmAmount);
+          const transaction = Transaction.create({
+            amount: p.xlmAmount,
+            originalAmount: (p.d.currency || 'XLM').toUpperCase() !== 'XLM' ? p.d.amount : undefined,
+            originalCurrency: (p.d.currency || 'XLM').toUpperCase() !== 'XLM' ? (p.d.currency).toUpperCase() : undefined,
+            donor: p.sanitizedDonor,
+            recipient: p.sanitizedRecipient,
+            memo: p.memo,
+            idempotencyKey: p.d.idempotencyKey,
+            analyticsFee: feeCalc.fee,
+            analyticsFeePercentage: feeCalc.feePercentage,
+            ...(stellarResult ? { stellarTxId: stellarResult.transactionId, stellarLedger: stellarResult.ledger } : {}),
+          });
+          results[p.d.index] = { index: p.d.index, success: true, data: transaction };
+        }
+      } catch (err) {
+        for (const p of prepared) {
+          results[p.d.index] = { index: p.d.index, success: false, error: { code: err.code || 'TRANSACTION_FAILED', message: err.message } };
+        }
+      }
+    }));
+
+    return results;
   }
 
   /**

@@ -16,6 +16,23 @@ const { validateDateRange } = require('../middleware/validation');
 const { checkPermission } = require('../middleware/rbac');
 const { PERMISSIONS } = require('../utils/permissions');
 const { validateSchema } = require('../middleware/schemaValidation');
+const AuditLogService = require('../services/AuditLogService');
+
+/** Fire-and-forget audit log for stats data access */
+function auditStatsAccess(req, res, next) {
+  AuditLogService.log({
+    category: AuditLogService.CATEGORY.DATA_ACCESS,
+    action: 'STATS_ACCESSED',
+    severity: AuditLogService.SEVERITY.LOW,
+    result: 'SUCCESS',
+    userId: req.user && req.user.id,
+    requestId: req.id,
+    ipAddress: req.ip,
+    resource: req.path,
+    details: { query: req.query, params: req.params }
+  }).catch(() => {});
+  next();
+}
 
 const strictDateRangeQuerySchema = validateSchema({
   query: {
@@ -57,13 +74,25 @@ const walletAnalyticsSchema = validateSchema({
  * Get daily aggregated donation volume
  * Query params: startDate, endDate (ISO format)
  */
-router.get('/daily', checkPermission(PERMISSIONS.STATS_READ), strictDateRangeQuerySchema, validateDateRange, (req, res) => {
+router.get('/daily', checkPermission(PERMISSIONS.STATS_READ), auditStatsAccess, strictDateRangeQuerySchema, validateDateRange, (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     const start = new Date(startDate);
     const end = new Date(endDate);
 
     const stats = StatsService.getDailyStats(start, end);
+
+    AuditLogService.log({
+      category: AuditLogService.CATEGORY.DATA_ACCESS,
+      action: 'STATS_ACCESSED',
+      severity: AuditLogService.SEVERITY.LOW,
+      result: 'SUCCESS',
+      userId: req.user && req.user.id,
+      requestId: req.id,
+      ipAddress: req.ip,
+      resource: '/stats/daily',
+      details: { startDate, endDate }
+    }).catch(() => {});
 
     res.json({
       success: true,
@@ -90,6 +119,7 @@ router.get('/daily', checkPermission(PERMISSIONS.STATS_READ), strictDateRangeQue
 router.get(
   "/weekly",
   checkPermission(PERMISSIONS.STATS_READ),
+  auditStatsAccess,
   strictDateRangeQuerySchema,
   validateDateRange,
   (req, res, next) => {
@@ -126,6 +156,7 @@ router.get(
 router.get(
   "/summary",
   checkPermission(PERMISSIONS.STATS_READ),
+  auditStatsAccess,
   strictDateRangeQuerySchema,
   validateDateRange,
   (req, res, next) => {
@@ -154,6 +185,7 @@ router.get(
 router.get(
   "/donors",
   checkPermission(PERMISSIONS.STATS_READ),
+  auditStatsAccess,
   strictDateRangeQuerySchema,
   validateDateRange,
   (req, res, next) => {
@@ -189,6 +221,7 @@ router.get(
 router.get(
   "/recipients",
   checkPermission(PERMISSIONS.STATS_READ),
+  auditStatsAccess,
   strictDateRangeQuerySchema,
   validateDateRange,
   (req, res, next) => {
@@ -221,7 +254,7 @@ router.get(
  * Get analytics fee summary for reporting
  * Query params: startDate, endDate (ISO format)
  */
-router.get('/analytics-fees', checkPermission(PERMISSIONS.STATS_READ), strictDateRangeQuerySchema, validateDateRange, (req, res) => {
+router.get('/analytics-fees', checkPermission(PERMISSIONS.STATS_READ), auditStatsAccess, strictDateRangeQuerySchema, validateDateRange, (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     const start = new Date(startDate);
@@ -406,6 +439,40 @@ router.get('/orphaned-transactions', checkPermission(PERMISSIONS.STATS_READ), as
       },
     });
   } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /stats/dashboard
+ * Comprehensive analytics dashboard data with configurable time range.
+ *
+ * Query params:
+ *   period       {string}  - Time range: e.g. 7d, 24h, 4w, 3m, 1y (default: 30d)
+ *   granularity  {string}  - hourly|daily|weekly|monthly (auto-selected if omitted)
+ *   topN         {number}  - Number of top donors/recipients (default: 10)
+ */
+router.get('/dashboard', checkPermission(PERMISSIONS.STATS_READ), (req, res, next) => {
+  try {
+    const { period = '30d', granularity, topN, movingAvgWindow } = req.query;
+
+    const topNParsed = topN !== undefined ? parseInt(topN, 10) : 10;
+    const windowParsed = movingAvgWindow !== undefined ? parseInt(movingAvgWindow, 10) : 3;
+
+    if (topN !== undefined && (!Number.isInteger(topNParsed) || topNParsed < 1)) {
+      return res.status(400).json({ success: false, error: { code: 'INVALID_PARAM', message: 'topN must be a positive integer' } });
+    }
+    if (granularity && !['hourly', 'daily', 'weekly', 'monthly'].includes(granularity)) {
+      return res.status(400).json({ success: false, error: { code: 'INVALID_PARAM', message: 'granularity must be hourly, daily, weekly, or monthly' } });
+    }
+
+    const data = StatsService.getDashboardData({ period, granularity, topN: topNParsed, movingAvgWindow: windowParsed });
+
+    res.json({ success: true, data });
+  } catch (error) {
+    if (error.statusCode === 400) {
+      return res.status(400).json({ success: false, error: { code: 'INVALID_PARAM', message: error.message } });
+    }
     next(error);
   }
 });
