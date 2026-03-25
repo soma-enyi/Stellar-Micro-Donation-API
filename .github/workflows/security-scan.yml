@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
   pull-requests: write
 
 jobs:
@@ -42,7 +43,8 @@ jobs:
 
       - name: Post PR Comment with Scan Results
         uses: actions/github-script@v8
-        if: github.event_name == 'pull_request' && failure() && github.event.pull_request.head.repo.fork == false
+        if: github.event_name == 'pull_request' && failure() && github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
         with:
           github-token: ${{secrets.GITHUB_TOKEN}}
           script: |
