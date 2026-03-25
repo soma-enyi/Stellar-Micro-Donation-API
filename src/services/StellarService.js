@@ -314,6 +314,70 @@ class StellarService extends StellarServiceInterface {
       };
     }, 'verifyTransaction');
   }
+
+  /**
+   * Merge a source account into a destination account.
+   *
+   * Transfers all XLM from the source account to the destination and closes
+   * the source account on the Stellar network (account merge operation).
+   *
+   * @param {string} sourceSecret      - Secret key of the account to merge (close)
+   * @param {string} destinationPublic - Public key of the account to receive all funds
+   * @returns {Promise<{hash: string, ledger: number, mergedAmount: string}>}
+   * @throws {ValidationError}     If keys are invalid or accounts are the same
+   * @throws {NotFoundError}       If destination account does not exist
+   * @throws {BusinessLogicError}  If the Stellar operation fails
+   */
+  async mergeAccount(sourceSecret, destinationPublic) {
+    return StellarErrorHandler.wrap(async () => {
+      const sourceKeypair = StellarSdk.Keypair.fromSecret(sourceSecret);
+      const sourcePublic = sourceKeypair.publicKey();
+
+      if (sourcePublic === destinationPublic) {
+        const { ValidationError } = require('../utils/errors');
+        throw new ValidationError('Source and destination accounts cannot be the same');
+      }
+
+      const sourceAccount = await this._executeWithRetry(() =>
+        this.server.loadAccount(sourcePublic)
+      );
+
+      // Verify destination exists
+      await this._executeWithRetry(() =>
+        this.server.loadAccount(destinationPublic)
+      );
+
+      const nativeBal = sourceAccount.balances.find(b => b.asset_type === 'native');
+      const mergedAmount = nativeBal ? nativeBal.balance : '0';
+
+      const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
+        fee: StellarSdk.BASE_FEE,
+        networkPassphrase:
+          this.network === 'public'
+            ? StellarSdk.Networks.PUBLIC
+            : StellarSdk.Networks.TESTNET,
+      })
+        .addOperation(
+          StellarSdk.Operation.accountMerge({ destination: destinationPublic })
+        )
+        .setTimeout(30)
+        .build();
+
+      transaction.sign(sourceKeypair);
+
+      const result = await this._submitTransactionWithNetworkSafety(transaction);
+
+      log.info('STELLAR_SERVICE', 'Account merged', {
+        source: sourcePublic,
+        destination: destinationPublic,
+        mergedAmount,
+        hash: result.hash,
+      });
+
+      return { hash: result.hash, ledger: result.ledger, mergedAmount };
+    }, 'mergeAccount');
+  }
+
 }
 
 module.exports = StellarService;
