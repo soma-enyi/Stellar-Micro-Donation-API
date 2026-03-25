@@ -29,7 +29,6 @@ const log = require('../utils/log');
 const priceOracle = require('./PriceOracleService');
 const { buildOverpaymentRecord } = require('../utils/overpaymentDetector');
 const memoCollisionDetector = require('../utils/memoCollisionDetector');
-const { paginateCollection } = require('../utils/pagination');
 
 class DonationService {
   constructor(stellarService) {

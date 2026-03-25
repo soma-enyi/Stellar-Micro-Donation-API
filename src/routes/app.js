@@ -170,7 +170,6 @@ app.get('/exchange-rates', async (req, res) => {
         rates,
         supportedCurrencies: ['XLM', ...priceOracle.SUPPORTED_CURRENCIES.map(c => c.toUpperCase())],
         cachedAt: new Date().toISOString(),
-      }
       },
     });
   } catch (err) {
