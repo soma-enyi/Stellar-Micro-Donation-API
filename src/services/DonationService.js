@@ -508,6 +508,8 @@ class DonationService {
     anonymous = false,
     sourceAsset,
     sourceAmount,
+    validAfter = 0,
+    validBefore = 0,
     memoEnvelope = null,
     encryptionMetadata = null,
   }) {
@@ -614,6 +616,8 @@ class DonationService {
           amount: normalizedSourceAmount.toString(),
           memo: memoResult.sanitized,
           asset: normalizedSourceAsset,
+          validAfter,
+          validBefore,
         });
         paymentMethod = 'direct';
       } else {
@@ -656,6 +660,8 @@ class DonationService {
               amount: normalizedSourceAmount.toString(),
               memo: memoResult.sanitized,
               asset: normalizedSourceAsset,
+              validAfter,
+              validBefore,
             });
             paymentMethod = 'direct';
             fallbackUsed = true;
@@ -702,6 +708,9 @@ class DonationService {
       // Anonymous donation fields
       anonymous: anonymous === true,
       pseudonymousId: pseudonymousId || null,
+      // Time-bound transaction fields
+      validAfter: validAfter || 0,
+      validBefore: validBefore || 0,
     });
 
     if (campaign_id) {

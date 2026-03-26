@@ -427,7 +427,7 @@ class StellarService extends StellarServiceInterface {
    * @param {string} [params.memo] - Optional transaction memo (max 28 bytes)
    * @returns {Promise<{transactionId: string, ledger: number}>}
    */
-  async sendDonation({ sourceSecret, destinationPublic, amount, memo = '', memoType = 'text', asset = null }) {
+  async sendDonation({ sourceSecret, destinationPublic, amount, memo = '', memoType = 'text', asset = null, validAfter = 0, validBefore = 0 }) {
     return StellarErrorHandler.wrap(async () => {
       const sourceKeypair = StellarSdk.Keypair.fromSecret(sourceSecret);
       const sourceAccount = await this._executeWithRetry(
@@ -436,9 +436,19 @@ class StellarService extends StellarServiceInterface {
       );
       const paymentAsset = asset ? toStellarSdkAsset(asset) : StellarSdk.Asset.native();
 
+      // Configure time bounds
+      // In Stellar, 0 means no limit (infinite)
+      // validAfter (minTime) = 0 means minimum time is not restricted
+      // validBefore (maxTime) = 0 means maximum time is not restricted
+      const timebounds = {
+        minTime: String(validAfter || '0'), 
+        maxTime: String(validBefore || '0')
+      };
+
       const transaction = new StellarSdk.TransactionBuilder(sourceAccount, {
         fee: this.baseFee,
         networkPassphrase: this.networkPassphrase,
+        timebounds,
       })
         .addOperation(StellarSdk.Operation.payment({
           destination: destinationPublic,

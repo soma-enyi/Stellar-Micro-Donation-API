@@ -140,10 +140,31 @@ const createDonationSchema = validateSchema({
         required: false,
         nullable: true,
       },
+      validAfter: {
+        type: 'integerString',
+        required: false,
+        nullable: true,
+        min: 0,
+      },
+      validBefore: {
+        type: 'integerString',
+        required: false,
+        nullable: true,
+        min: 0,
+      },
     },
     validate: (body) => {
       if ((body.sourceAsset && !body.sourceAmount) || (!body.sourceAsset && body.sourceAmount)) {
         return 'sourceAsset and sourceAmount must be provided together';
+      }
+
+      // Validate time bounds: if both provided, validAfter must be < validBefore
+      if (body.validAfter && body.validBefore) {
+        const validAfter = Number(body.validAfter);
+        const validBefore = Number(body.validBefore);
+        if (validAfter >= validBefore) {
+          return 'validAfter must be less than validBefore';
+        }
       }
 
       return null;
@@ -445,6 +466,9 @@ router.post('/batch', payloadSizeLimiter(ENDPOINT_LIMITS.batchDonation), safeBat
  */
 router.post('/', payloadSizeLimiter(ENDPOINT_LIMITS.singleDonation), donationRateLimiter, requireApiKey, requireIdempotency, createDonationSchema, async (req, res, next) => {
   try {
+    const { amount, currency, donor, recipient, memo, memoType, notes, tags, encryptMemo, validAfter, validBefore } = req.body;
+    const { amount, currency, donor, recipient, memo, memoType, notes, tags, anonymous, validAfter, validBefore } = req.body;
+    const { amount, currency, donor, recipient, memo, memoType, notes, tags, sourceAsset, sourceAmount, validAfter, validBefore } = req.body;
     const {
       amount,
       currency,
@@ -488,6 +512,20 @@ router.post('/', payloadSizeLimiter(ENDPOINT_LIMITS.singleDonation), donationRat
           error: `Invalid sourceAmount: ${sourceAmountValidation.error}`
         });
       }
+    }
+
+    // Validate time bounds strictly: validAfter < validBefore
+    const parsedValidAfter = validAfter ? Number(validAfter) : 0;
+    const parsedValidBefore = validBefore ? Number(validBefore) : 0;
+
+    if (parsedValidAfter && parsedValidBefore && parsedValidAfter >= parsedValidBefore) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_TIME_BOUNDS',
+          message: 'validAfter must be strictly less than validBefore'
+        }
+      });
     }
 
     // Validate memo type + value combination
@@ -542,6 +580,8 @@ router.post('/', payloadSizeLimiter(ENDPOINT_LIMITS.singleDonation), donationRat
       tags,
       memoEnvelope,
       encryptionMetadata,
+      validAfter: parsedValidAfter,
+      validBefore: parsedValidBefore,
       idempotencyKey: req.idempotency.key,
       apiKeyId: req.apiKey ? req.apiKey.id : null,
       apiKeyRole: req.apiKey ? req.apiKey.role : (req.user?.role || 'user'),

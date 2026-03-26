@@ -70,6 +70,8 @@ function createTransactionsTable(db) {
         stellar_tx_id TEXT UNIQUE,
         is_orphan INTEGER NOT NULL DEFAULT 0,
         campaign_id INTEGER,
+        validAfter INTEGER DEFAULT 0,
+        validBefore INTEGER DEFAULT 0,
         tenant_id TEXT NOT NULL DEFAULT 'default',
         FOREIGN KEY (campaign_id) REFERENCES campaigns(id),
         FOREIGN KEY (senderId) REFERENCES users(id),

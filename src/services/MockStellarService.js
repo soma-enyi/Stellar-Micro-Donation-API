@@ -47,6 +47,11 @@ class MockStellarService extends StellarServiceInterface {
     };
 
     this.requestTimestamps = [];
+    
+    // Mock system time for testing time-bound transactions
+    // Can be overridden via setMockSystemTime() for testing clock-based failures
+    this.mockSystemTime = null;
+    
     this.failureSimulation = {
       enabled: false,
       type: null,
@@ -73,6 +78,33 @@ class MockStellarService extends StellarServiceInterface {
 
   setMaxConsecutiveFailures(max) {
     this.failureSimulation.maxConsecutiveFailures = max;
+  }
+
+  /**
+   * Set mock system time for testing time-bound transactions.
+   * @param {number} unixTimestamp - Unix timestamp in seconds (or null to use real time)
+   */
+  setMockSystemTime(unixTimestamp) {
+    this.mockSystemTime = unixTimestamp;
+  }
+
+  /**
+   * Get current system time in Unix seconds.
+   * Returns mock time if set, otherwise current real time.
+   * @returns {number} Unix timestamp in seconds
+   */
+  getCurrentSystemTime() {
+    if (this.mockSystemTime !== null) {
+      return this.mockSystemTime;
+    }
+    return Math.floor(Date.now() / 1000);
+  }
+
+  /**
+   * Reset mock system time to use real time.
+   */
+  resetMockSystemTime() {
+    this.mockSystemTime = null;
   }
 
   getNetwork() { return this.network; }
@@ -751,9 +783,11 @@ class MockStellarService extends StellarServiceInterface {
    * @param {string} [params.memo] - Transaction memo
    * @param {string} [params.memoType='text'] - Stellar memo type
    * @param {Object} [params.asset=NATIVE_ASSET] - Asset to transfer
+   * @param {number} [params.validAfter=0] - Unix timestamp of minimum valid time (0 = no limit)
+   * @param {number} [params.validBefore=0] - Unix timestamp of maximum valid time (0 = no limit)
    * @returns {Promise<{transactionId: string, ledger: number, status: string, confirmedAt: string}>}
    */
-  async sendDonation({ sourceSecret, destinationPublic, amount, memo, memoType = 'text', asset = NATIVE_ASSET }) {
+  async sendDonation({ sourceSecret, destinationPublic, amount, memo, memoType = 'text', asset = NATIVE_ASSET, validAfter = 0, validBefore = 0 }) {
     return this._executeWithRetry(async () => {
       await this._simulateNetworkDelay();
       this._checkRateLimit();
@@ -762,6 +796,30 @@ class MockStellarService extends StellarServiceInterface {
       this._validateAmount(amount);
       this._simulateFailure();
       this._simulateRandomFailure();
+
+      // Validate time bounds: validAfter < validBefore if both are set
+      if (validAfter && validBefore && validAfter >= validBefore) {
+        throw new ValidationError('validAfter must be strictly less than validBefore');
+      }
+
+      // Check time bounds against current mock system time
+      const currentTime = this.getCurrentSystemTime();
+      
+      if (validAfter && currentTime < validAfter) {
+        throw new BusinessLogicError(
+          ERROR_CODES.TRANSACTION_FAILED,
+          `Transaction error: Time bounds violation. Current time (${currentTime}) is before validAfter (${validAfter}). Transaction is not yet valid.`,
+          { retryable: false }
+        );
+      }
+
+      if (validBefore && currentTime > validBefore) {
+        throw new BusinessLogicError(
+          ERROR_CODES.TRANSACTION_FAILED,
+          `Transaction error: Time bounds violation. Current time (${currentTime}) is after validBefore (${validBefore}). Transaction has expired.`,
+          { retryable: false }
+        );
+      }
 
       const MemoValidator = require('../utils/memoValidator');
       if (memo) {
@@ -806,6 +864,8 @@ class MockStellarService extends StellarServiceInterface {
         asset: serializeAsset(asset),
         memo: memo || '',
         memoType,
+        validAfter: validAfter || 0,
+        validBefore: validBefore || 0,
         timestamp: new Date().toISOString(),
         ledger: Math.floor(Math.random() * 1000000) + 1000000,
         status: 'confirmed',
