@@ -9,6 +9,7 @@
     "migrate:memo": "node src/scripts/addMemoColumn.js",
     "migrate:currency": "node src/scripts/migrations/addCurrencyColumns.js",
     "test": "jest",
+    "test:e2e": "jest --config jest.config.e2e.js",
     "test:coverage": "jest --coverage",
     "test:coverage:ci": "jest --coverage --ci --maxWorkers=2",
     "check-coverage": "node scripts/check-coverage.js",
