@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/routes/app.js",
     "init-db": "node src/scripts/initDB.js",
+    "migrate": "node src/scripts/migrate.js",
     "migrate:memo": "node src/scripts/addMemoColumn.js",
     "migrate:currency": "node src/scripts/migrations/addCurrencyColumns.js",
     "test": "jest",

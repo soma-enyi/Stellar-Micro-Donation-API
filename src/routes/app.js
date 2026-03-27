@@ -481,7 +481,8 @@ const PORT = config.server.port;
 async function startServer() {
   try {
     await logStartupDiagnostics();
-    await Database.initialize();
+    const { runMigrations } = require('../utils/migrationRunner');
+    await runMigrations();
     await initializeApiKeysTable();
     
     // Initialize feature flags table
