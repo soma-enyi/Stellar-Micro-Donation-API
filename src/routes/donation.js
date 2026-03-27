@@ -182,10 +182,25 @@ const createDonationSchema = validateSchema({
         required: false,
         nullable: true,
       },
+      memoHash: {
+        type: 'string',
+        required: false,
+        nullable: true,
+        maxLength: 128,
+      },
     },
     validate: (body) => {
       if ((body.sourceAsset && !body.sourceAmount) || (!body.sourceAsset && body.sourceAmount)) {
         return 'sourceAsset and sourceAmount must be provided together';
+      }
+      // Validate memoHash: must be exactly 32 bytes as hex (64 chars) or base64 (44 chars)
+      if (body.memoHash) {
+        const h = body.memoHash.trim();
+        const isHex = /^[0-9a-fA-F]{64}$/.test(h);
+        const isBase64 = /^[A-Za-z0-9+/]{43}=$/.test(h);
+        if (!isHex && !isBase64) {
+          return 'memoHash must be exactly 32 bytes encoded as hex (64 hex chars) or base64 (44 chars with padding)';
+        }
       }
 
       // Validate time bounds: if both provided, validAfter must be < validBefore
@@ -565,6 +580,7 @@ router.post('/', payloadSizeLimiter(ENDPOINT_LIMITS.singleDonation), donationRat
       sourceAsset,
       sourceAmount,
       mintCertificate,
+      memoHash,
       routingStrategy,
       poolName,
       donorLatitude,
@@ -661,6 +677,23 @@ router.post('/', payloadSizeLimiter(ENDPOINT_LIMITS.singleDonation), donationRat
       }
     }
 
+    // If memoHash is provided, override memo/memoType to use hash memo
+    let resolvedMemo = memo;
+    let resolvedMemoType = memoType || 'text';
+    let normalizedMemoHash = null;
+    if (memoHash) {
+      const h = memoHash.trim();
+      // Normalise to hex
+      if (/^[0-9a-fA-F]{64}$/.test(h)) {
+        normalizedMemoHash = h.toLowerCase();
+      } else {
+        // base64 → hex
+        normalizedMemoHash = Buffer.from(h, 'base64').toString('hex');
+      }
+      resolvedMemo = normalizedMemoHash;
+      resolvedMemoType = 'hash';
+    }
+
     // Resolve federation address if needed (e.g. alice*example.com → GABC...)
     let resolvedRecipient = resolvedRecipientInput;
     if (federation.isFederationAddress(resolvedRecipientInput)) {
@@ -693,14 +726,15 @@ router.post('/', payloadSizeLimiter(ENDPOINT_LIMITS.singleDonation), donationRat
       currency: currency || 'XLM',
       donor,
       recipient: resolvedRecipient,
-      memo,
+      memo: resolvedMemo,
       sourceAsset: normalizedSourceAsset,
       sourceAmount: sourceAmountValidation ? sourceAmountValidation.value : undefined,
-      memoType: memoType || 'text',
+      memoType: resolvedMemoType,
       notes,
       tags,
       memoEnvelope,
       encryptionMetadata,
+      memoHash: normalizedMemoHash,
       validAfter: parsedValidAfter,
       validBefore: parsedValidBefore,
       idempotencyKey: req.idempotency.key,
@@ -887,6 +921,7 @@ const listDonationsQuerySchema = validateSchema({
       donor:      { type: 'string',  required: false, nullable: true, maxLength: 255 },
       recipient:  { type: 'string',  required: false, nullable: true, maxLength: 255 },
       memo:       { type: 'string',  required: false, nullable: true, maxLength: 255 },
+      memoHash:   { type: 'string',  required: false, nullable: true, maxLength: 128 },
       sortBy:     { type: 'string',  required: false, nullable: true, enum: ['timestamp', 'amount', 'status'] },
       order:      { type: 'string',  required: false, nullable: true, enum: ['asc', 'desc'] },
     },
@@ -912,9 +947,21 @@ const listDonationsQuerySchema = validateSchema({
  */
 router.get('/', checkPermission(PERMISSIONS.DONATIONS_READ), listDonationsQuerySchema, (req, res, next) => {
   try {
-    const { tag } = req.query;
+    const { tag, memoHash } = req.query;
     const pagination = parseCursorPaginationQuery(req.query);
     const result = donationService.getPaginatedDonations(pagination, { tag });
+
+    // Filter by memoHash if provided
+    let data = result.data;
+    if (memoHash) {
+      // Normalise query hash to hex for comparison
+      let queryHash = memoHash.trim();
+      if (/^[A-Za-z0-9+/]{43}=$/.test(queryHash)) {
+        queryHash = Buffer.from(queryHash, 'base64').toString('hex');
+      }
+      queryHash = queryHash.toLowerCase();
+      data = data.filter(tx => tx.memoHash && tx.memoHash.toLowerCase() === queryHash);
+    }
     
     // Mark processing complete
     if (req.markLifecycleStage) {
@@ -923,7 +970,7 @@ router.get('/', checkPermission(PERMISSIONS.DONATIONS_READ), listDonationsQueryS
 
     res.setHeader('X-Total-Count', String(result.totalCount));
     
-    const protectedData = result.data.map(tx => applyNotePrivacy(req, tx));
+    const protectedData = data.map(tx => applyNotePrivacy(req, tx));
 
     res.json({
       success: true,
@@ -1487,6 +1534,95 @@ router.get('/:id/impact', checkPermission(PERMISSIONS.DONATIONS_READ), donationI
         amount: transaction.amount,
         campaign_id: transaction.campaign_id,
         impact,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /donations/:id/verify-memo
+ * Verify that a document's SHA-256 hash matches the hash memo stored on a donation.
+ *
+ * Accepts either:
+ *   - { document: <hex or base64 string of raw bytes> } — hashes the decoded bytes
+ *   - { hash: <hex or base64 encoded 32-byte hash> }    — compares directly
+ *
+ * Returns { verified: boolean, donationId, memoHash, providedHash }
+ */
+router.post('/:id/verify-memo', checkPermission(PERMISSIONS.DONATIONS_READ), donationIdParamSchema, (req, res, next) => {
+  try {
+    const transaction = Transaction.getById(req.params.id);
+
+    if (!transaction) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: `Donation ${req.params.id} not found` },
+      });
+    }
+
+    if (!transaction.memoHash || transaction.memoType !== 'hash') {
+      return res.status(422).json({
+        success: false,
+        error: { code: 'NO_HASH_MEMO', message: 'This donation does not have a hash memo' },
+      });
+    }
+
+    const { document, hash } = req.body;
+
+    if (!document && !hash) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'MISSING_INPUT', message: 'Provide either "document" (raw bytes as hex/base64) or "hash" (32-byte hash as hex/base64)' },
+      });
+    }
+
+    let providedHashHex;
+
+    if (hash) {
+      // Direct hash comparison
+      const h = String(hash).trim();
+      if (/^[0-9a-fA-F]{64}$/.test(h)) {
+        providedHashHex = h.toLowerCase();
+      } else if (/^[A-Za-z0-9+/]{43}=$/.test(h)) {
+        providedHashHex = Buffer.from(h, 'base64').toString('hex');
+      } else {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'INVALID_HASH', message: 'hash must be exactly 32 bytes as hex (64 chars) or base64 (44 chars)' },
+        });
+      }
+    } else {
+      // Hash the document
+      const crypto = require('crypto');
+      let docBuffer;
+      const d = String(document).trim();
+      if (/^[0-9a-fA-F]+$/.test(d) && d.length % 2 === 0) {
+        docBuffer = Buffer.from(d, 'hex');
+      } else {
+        try {
+          docBuffer = Buffer.from(d, 'base64');
+        } catch {
+          return res.status(400).json({
+            success: false,
+            error: { code: 'INVALID_DOCUMENT', message: 'document must be hex or base64 encoded bytes' },
+          });
+        }
+      }
+      providedHashHex = crypto.createHash('sha256').update(docBuffer).digest('hex');
+    }
+
+    const storedHash = transaction.memoHash.toLowerCase();
+    const verified = storedHash === providedHashHex;
+
+    return res.json({
+      success: true,
+      data: {
+        verified,
+        donationId: transaction.id,
+        memoHash: storedHash,
+        providedHash: providedHashHex,
       },
     });
   } catch (error) {

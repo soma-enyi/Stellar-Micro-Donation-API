@@ -72,6 +72,7 @@ class Transaction {
       recipient: transactionData.recipient,
       memo: transactionData.memo || '',
       memoType: transactionData.memoType || 'text',
+      memoHash: transactionData.memoHash || null,
       encryptionMetadata: transactionData.encryptionMetadata || null,
       memoEnvelope: transactionData.memoEnvelope || null,
       notes: transactionData.notes || null,
