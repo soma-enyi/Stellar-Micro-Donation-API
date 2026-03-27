@@ -1,8 +1,10 @@
 /**
- * Auth Routes - JWT Token Issuance and Refresh
+ * Auth Routes - JWT Token Issuance and API Key Authentication
  *
  * POST /auth/token   - Exchange a valid API key for an access + refresh token pair
  * POST /auth/refresh - Rotate a refresh token; returns new access + refresh tokens
+ * GET  /auth         - Generate SEP-0010 challenge transaction for Stellar authentication
+ * POST /auth         - Verify signed SEP-0010 challenge and return JWT token
  */
 
 const express = require('express');
@@ -12,6 +14,8 @@ const {
   issueTokenPair,
   rotateRefreshToken,
 } = require('../services/JwtService');
+const SEP10Service = require('../services/SEP10Service');
+const { getStellarService } = require('../config/stellar');
 const log = require('../utils/log');
 
 /**
@@ -85,6 +89,77 @@ router.post('/refresh', async (req, res) => {
     }
     log.error('AUTH', 'Refresh token rotation failed', { error: err.message });
     return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: 'Failed to refresh token' } });
+  }
+});
+
+/**
+ * GET /auth
+ * Returns a SEP-0010 challenge transaction XDR that the client can sign.
+ * Query params: account=<stellar_public_key>
+ */
+router.get('/', async (req, res) => {
+  if (!sep10Service) {
+    return res.status(501).json({
+      success: false,
+      error: { code: 'SEP10_NOT_CONFIGURED', message: 'SEP-0010 authentication is not available' },
+    });
+  }
+
+  const account = req.query.account;
+  if (!account || typeof account !== 'string') {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'MISSING_ACCOUNT', message: 'account query parameter is required' },
+    });
+  }
+
+  try {
+    const challengeXDR = await sep10Service.generateChallenge(account);
+    return res.status(200).json({ success: true, data: { transaction: challengeXDR } });
+  } catch (err) {
+    log.error('AUTH', 'Challenge generation failed', { error: err.message });
+    return res.status(400).json({ success: false, error: { code: 'INVALID_CHALLENGE', message: err.message } });
+  }
+});
+
+/**
+ * POST /auth
+ * Verifies a signed SEP-0010 challenge and returns a JWT access token.
+ * Body: { transaction: '<signed_tx_xdr>' }
+ */
+router.post('/', async (req, res) => {
+  if (!sep10Service) {
+    return res.status(501).json({
+      success: false,
+      error: { code: 'SEP10_NOT_CONFIGURED', message: 'SEP-0010 authentication is not available' },
+    });
+  }
+
+  const payload = req.body || {};
+  const signedTx = payload.transaction;
+
+  if (!signedTx || typeof signedTx !== 'string') {
+    return res.status(400).json({
+      success: false,
+      error: { code: 'MISSING_TRANSACTION', message: 'transaction is required' },
+    });
+  }
+
+  try {
+    const account = await sep10Service.verifyChallenge(signedTx);
+    const accessToken = sep10Service.issueAuthToken(account);
+    return res.status(200).json({
+      success: true,
+      data: {
+        accessToken,
+        tokenType: 'Bearer',
+        expiresIn: 900,
+        account,
+      },
+    });
+  } catch (err) {
+    log.error('AUTH', 'Challenge verification failed', { error: err.message });
+    return res.status(401).json({ success: false, error: { code: 'INVALID_CHALLENGE', message: err.message } });
   }
 });
 

@@ -11,6 +11,7 @@
 
 const { securityConfig } = require("../config/securityConfig");
 const { validateKey, incrementQuota } = require("../models/apiKeys");
+const { verifyAccessToken } = require("../services/JwtService");
 const log = require("../utils/log");
 const AuditLogService = require("../services/AuditLogService");
 const { verify: verifySignature } = require("../utils/requestSigner");
@@ -40,6 +41,34 @@ const legacyKeys = securityConfig.API_KEYS || [];
  */
 const requireApiKey = async (req, res, next) => {
   if (req.apiKey) {
+    return next();
+  }
+
+  // Allow JWT bearer token as an alternate auth method
+  const authorization = req.get('Authorization') || req.get('authorization');
+  if (authorization && authorization.startsWith('Bearer ')) {
+    const token = authorization.slice(7).trim();
+    const result = verifyAccessToken(token);
+    if (result.valid) {
+      req.user = {
+        id: `jwt-${result.payload.sub || 'unknown'}`,
+        role: result.payload.role || 'user',
+        authMethod: 'jwt',
+        claims: result.payload,
+      };
+      return next();
+    }
+
+    return res.status(401).json({
+      success: false,
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Invalid or expired bearer token',
+      },
+    });
+  }
+
+  if (req.user && req.user.authMethod === 'jwt') {
     return next();
   }
 
