@@ -159,6 +159,40 @@ class StellarServiceInterface {
     void _amount;
     throw new Error('clawback() must be implemented');
   }
+
+  /**
+   * Add a trustline for an asset to an account.
+   * @param {string} _publicKey - Account public key
+   * @param {Object} _asset - Asset object with code and issuer
+   * @returns {Promise<{hash: string, ledger: number}>}
+   */
+  async addTrustline(_publicKey, _asset) {
+    void _publicKey;
+    void _asset;
+    throw new Error('addTrustline() must be implemented');
+  }
+
+  /**
+   * Remove a trustline for an asset from an account.
+   * @param {string} _publicKey - Account public key
+   * @param {Object} _asset - Asset object with code and issuer
+   * @returns {Promise<{hash: string, ledger: number}>}
+   */
+  async removeTrustline(_publicKey, _asset) {
+    void _publicKey;
+    void _asset;
+    throw new Error('removeTrustline() must be implemented');
+  }
+
+  /**
+   * Get all trustlines for an account with their balances.
+   * @param {string} _publicKey - Account public key
+   * @returns {Promise<Array<{asset: Object, balance: string, limit: string}>>}
+   */
+  async getTrustlines(_publicKey) {
+    void _publicKey;
+    throw new Error('getTrustlines() must be implemented');
+  }
 }
 
 module.exports = StellarServiceInterface;

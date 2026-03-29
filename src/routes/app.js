@@ -21,7 +21,9 @@ const statsRoutes = require('./stats');
 const streamRoutes = require('./stream');
 const transactionRoutes = require('./transaction');
 const apiKeysRoutes = require('./apiKeys');
+const apiKeyUsageRoutes = require('./apiKeyUsage');
 const recurringDonationRoutes = require('./recurringDonation');
+const channelRoutes = require('./channels');
 const assetRoutes = require('./assets');
 const feesRoutes = require('./fees');
 const featureFlagsAdminRoutes = require('./admin/featureFlags');
@@ -34,6 +36,7 @@ const corporateMatchingAdminRoutes = require('./admin/corporateMatching');
 const corporateMatchingRoutes = require('./corporateMatching');
 const routingAdminRoutes = require('./admin/routing');
 const impactMetricsAdminRoutes = require('./admin/impactMetrics');
+const adminAnalyticsRoutes = require('./admin/analytics');
 const networkRoutes = require('./network');
 const webhooksRoutes = require('./webhooks');
 const campaignsRoutes = require('./campaigns');
@@ -41,6 +44,7 @@ const tiersRoutes = require('./tiers');
 const offersRoutes = require('./offers');
 const tagsRoutes = require('./tags');
 const leaderboardRoutes = require('./leaderboard');
+const { router: federationLookupRoutes } = require('./federationLookup');
 const { errorHandler, notFoundHandler } = require('../middleware/errorHandler');
 const logger = require('../middleware/logger');
 const { attachUserRole } = require('../middleware/rbac');
@@ -209,7 +213,9 @@ app.use('/assets', assetRoutes);
 app.use('/stats', statsRoutes);
 app.use('/stream', streamRoutes);
 app.use('/transactions', transactionRoutes);
+app.use('/api-keys', apiKeyUsageRoutes);
 app.use('/api-keys', apiKeysRoutes);
+app.use('/channels', channelRoutes);
 app.use('/fees', feesRoutes);
 app.use('/admin/feature-flags', featureFlagsAdminRoutes);
 app.use('/admin/db', dbAdminRoutes);
@@ -220,7 +226,9 @@ app.use('/admin/corporate-matching', corporateMatchingAdminRoutes);
 app.use('/corporate-matching', corporateMatchingRoutes);
 app.use('/admin/routing', routingAdminRoutes);
 app.use('/admin/impact-metrics', impactMetricsAdminRoutes);
+app.use('/admin/analytics', adminAnalyticsRoutes);
 app.use('/admin/geo-blocking', require('./admin/geoBlocking'));
+app.use('/admin/cors', require('./admin/corsOrigins'));
 
 // Fee bump admin route — lazy access to serviceContainer
 app.use('/admin/transactions', (req, res, next) => {
@@ -237,6 +245,7 @@ app.use('/offers', offersRoutes);
 app.use('/orderbook/:baseAsset/:counterAsset', require('./orderbook'));
 app.use('/tags', tagsRoutes);
 app.use('/leaderboard', leaderboardRoutes);
+app.use('/federation', federationLookupRoutes);
 app.use('/auth', authRoutes);
 
 // Exchange rates endpoint
