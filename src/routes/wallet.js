@@ -172,7 +172,10 @@ router.get('/:id/balance', checkPermission(PERMISSIONS.WALLETS_READ), walletIdSc
  */
 router.get('/:id', checkPermission(PERMISSIONS.WALLETS_READ), walletIdSchema, cacheMiddleware('wallet', 'private'), async (req, res, next) => {
   try {
-    const wallet = walletService.getWalletById(req.params.id);
+    const wallet = await Database.get(
+      'SELECT id, publicKey, label, ownerName, createdAt FROM users WHERE id = ?',
+      [req.params.id]
+    );
     if (!wallet) {
       return res.status(404).json({ success: false, error: 'Wallet not found' });
     }
@@ -789,6 +792,47 @@ router.delete('/:id/data/:key',
 );
 
 /**
+ * GET /wallets/:id/merge/eligibility
+ * Check whether a wallet account is eligible for merging.
+ * Returns all blocking conditions (open offers, non-zero trustlines, data entries).
+ */
+router.get('/:id/merge/eligibility', checkPermission(PERMISSIONS.WALLETS_READ), walletIdSchema, async (req, res, next) => {
+  try {
+    const wallet = await Database.get(
+      'SELECT id, publicKey, mergedAt FROM users WHERE id = ?',
+      [req.params.id]
+    );
+
+    if (!wallet) {
+      return res.status(404).json({ success: false, error: 'Wallet not found' });
+    }
+
+    if (wallet.mergedAt) {
+      return res.status(409).json({
+        success: false,
+        error: 'Wallet has already been merged and closed',
+        data: { eligible: false, blockers: [{ type: 'already_merged', detail: 'Wallet was merged on ' + wallet.mergedAt }] }
+      });
+    }
+
+    const stellarSvc = getStellarService();
+    const result = await stellarSvc.validateMergeEligibility(wallet.publicKey);
+
+    res.json({
+      success: true,
+      data: {
+        walletId: wallet.id,
+        publicKey: wallet.publicKey,
+        eligible: result.eligible,
+        blockers: result.blockers,
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * POST /wallets/:id/merge
  * Merge a wallet into a destination account.
  *
@@ -846,6 +890,17 @@ router.post('/:id/merge', checkPermission(PERMISSIONS.WALLETS_DELETE), async (re
 
     // ── Execute merge on Stellar ─────────────────────────────────────────────
     const stellarService = getStellarService();
+
+    // Pre-merge eligibility check
+    const eligibility = await stellarService.validateMergeEligibility(sourceWallet.publicKey);
+    if (!eligibility.eligible) {
+      return res.status(400).json({
+        success: false,
+        error: 'Account is not eligible for merge',
+        data: { blockers: eligibility.blockers }
+      });
+    }
+
     const mergeResult = await stellarService.mergeAccount(sourceSecret, destinationPublicKey);
 
     // ── Soft-delete source wallet ────────────────────────────────────────────
@@ -1077,5 +1132,135 @@ router.patch('/:id/options', checkPermission(PERMISSIONS.WALLETS_UPDATE), wallet
     next(error);
   }
 });
+
+// ─── Trustline Management ───────────────────────────────────────────────────────
+
+const trustlineDeleteSchema = validateSchema({
+  params: {
+    fields: {
+      id: { type: 'integerString', required: true },
+      asset: { type: 'string', required: true },
+    },
+  },
+  body: {
+    fields: {
+      secretKey:    { type: 'string', required: true },
+      issuerPublic: { type: 'string', required: true, trim: true },
+    },
+  },
+});
+
+const trustlineListSchema = validateSchema({
+  params: {
+    fields: {
+      id: { type: 'integerString', required: true },
+    },
+  },
+});
+
+/**
+ * DELETE /wallets/:id/trustlines/:asset
+ * Remove a trustline for a custom asset from the wallet's Stellar account.
+ * The account must have a zero balance for the asset before removal.
+ *
+ * @param {string} asset - Asset code in the URL path
+ * @body {string} secretKey    - Secret key of the wallet account
+ * @body {string} issuerPublic - Public key of the asset issuer
+ */
+router.delete('/:id/trustlines/:asset', checkPermission(PERMISSIONS.WALLETS_UPDATE), trustlineDeleteSchema, async (req, res, next) => {
+  try {
+    const { asset } = req.params;
+    const { secretKey, issuerPublic } = req.body;
+
+    const stellar = getStellarService();
+    const result = await stellar.removeTrustline(secretKey, asset, issuerPublic);
+
+    await AuditLogService.log({
+      category: AuditLogService.CATEGORY.WALLET_OPERATION,
+      action: 'TRUSTLINE_REMOVED',
+      severity: AuditLogService.SEVERITY.MEDIUM,
+      result: 'SUCCESS',
+      userId: req.user && req.user.id,
+      requestId: req.id,
+      ipAddress: req.ip,
+      resource: `/wallets/${req.params.id}/trustlines/${asset}`,
+      details: { walletId: req.params.id, assetCode: asset, issuerPublic, txHash: result.hash },
+    });
+
+    return res.json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /wallets/:id/trustlines
+ * List all trustlines for the wallet's Stellar account with their balances.
+ *
+ * Returns an array of trustlines containing asset details, current balance, and limits.
+ */
+router.get('/:id/trustlines', checkPermission(PERMISSIONS.WALLETS_READ), trustlineListSchema, async (req, res, next) => {
+  try {
+    const walletId = parseInt(req.params.id, 10);
+
+    const wallet = await Database.get('SELECT * FROM users WHERE id = ?', [walletId]);
+    if (!wallet) throw new NotFoundError(`Wallet ${walletId} not found`);
+
+    const stellar = getStellarService();
+    const trustlines = await stellar.getTrustlines(wallet.publicKey);
+
+    await AuditLogService.log({
+      category: AuditLogService.CATEGORY.WALLET_OPERATION,
+      action: 'TRUSTLINES_LISTED',
+      severity: AuditLogService.SEVERITY.LOW,
+      result: 'SUCCESS',
+      userId: req.user && req.user.id,
+      requestId: req.id,
+      ipAddress: req.ip,
+      resource: `/wallets/${walletId}/trustlines`,
+      details: { walletId, count: trustlines.length },
+    });
+
+    return res.json({ success: true, data: { trustlines, count: trustlines.length } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+module.exports = router;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /wallets/bulk-import  (enterprise tier required)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const { requireTier } = require('../middleware/rbac');
+
+/**
+ * @route   POST /wallets/bulk-import
+ * @desc    Bulk import wallet addresses (enterprise tier only)
+ * @access  wallets:create + enterprise tier
+ */
+router.post(
+  '/bulk-import',
+  checkPermission(PERMISSIONS.WALLETS_CREATE),
+  requireTier('enterprise'),
+  bulkImportRateLimiter,
+  payloadSizeLimiter(ENDPOINT_LIMITS.bulkImport || 1024 * 1024),
+  async (req, res, next) => {
+    try {
+      const { wallets } = req.body;
+      if (!Array.isArray(wallets) || wallets.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'VALIDATION_ERROR', message: 'wallets must be a non-empty array' },
+        });
+      }
+      const result = await BulkWalletImportService.importWallets(wallets, req.user);
+      res.status(207).json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 module.exports = router;

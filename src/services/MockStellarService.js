@@ -1798,6 +1798,59 @@ class MockStellarService extends StellarServiceInterface {
   }
 
   /**
+   * Validate whether a mock account is eligible for merging.
+   *
+   * Checks for open offers, non-native trustlines with non-zero balances,
+   * and data entries in the mock wallet store.
+   *
+   * @param {string} publicKey - Public key of the account to check
+   * @returns {Promise<{eligible: boolean, blockers: Array<{type: string, detail: string}>}>}
+   */
+  async validateMergeEligibility(publicKey) {
+    if (!this.isValidAddress(publicKey)) {
+      throw new ValidationError('Invalid Stellar address');
+    }
+
+    const wallet = this.wallets.get(publicKey);
+    if (!wallet) {
+      throw new NotFoundError('Account not found in mock wallets', ERROR_CODES.WALLET_NOT_FOUND);
+    }
+
+    const blockers = [];
+
+    // Check non-native balances
+    if (wallet.balances) {
+      for (const balance of wallet.balances) {
+        if (balance.asset_type !== 'native') {
+          const bal = parseFloat(balance.balance || '0');
+          if (bal > 0) {
+            blockers.push({
+              type: 'non_zero_trustline',
+              detail: `Non-zero trustline: ${balance.asset_code || balance.asset_type} (balance: ${balance.balance})`
+            });
+          }
+        }
+      }
+    }
+
+    // Check open offers
+    if (wallet.openOffers && wallet.openOffers.length > 0) {
+      blockers.push({ type: 'open_offers', detail: 'Account has open DEX offers' });
+    }
+
+    // Check data entries
+    const dataEntries = Object.keys(wallet.dataEntries || {});
+    if (dataEntries.length > 0) {
+      blockers.push({
+        type: 'data_entries',
+        detail: `Account has ${dataEntries.length} data entr${dataEntries.length === 1 ? 'y' : 'ies'}`
+      });
+    }
+
+    return { eligible: blockers.length === 0, blockers };
+  }
+
+  /**
    * Issue a custom Stellar asset to a recipient (mock implementation).
    *
    * Validates inputs, creates an in-memory asset balance for the recipient,
@@ -2382,6 +2435,68 @@ class MockStellarService extends StellarServiceInterface {
    * @param {string} buyingAsset  - Counter asset key
    * @param {Object} data         - Order book snapshot to push to listeners
    */
+  /**
+   * Mock implementation of distributeAsset.
+   * Simulates sending a custom asset from a distributor to a recipient.
+   *
+   * @param {string} distributorSecret  - Secret key of the distributor
+   * @param {string} assetCode          - Asset code
+   * @param {string} issuerPublicKey    - Public key of the issuer
+   * @param {string} recipientPublicKey - Public key of the recipient
+   * @param {string} amount             - Amount to distribute
+   * @returns {Promise<{hash: string, ledger: number, assetCode: string, issuerPublicKey: string, recipientPublicKey: string, amount: string}>}
+   */
+  async distributeAsset(distributorSecret, assetCode, issuerPublicKey, recipientPublicKey, amount) {
+    return this._executeWithRetry(async () => {
+      await this._simulateNetworkDelay();
+      this._simulateFailure();
+
+      const { ValidationError } = require('../utils/errors');
+      if (!assetCode || !/^[A-Za-z0-9]{1,12}$/.test(assetCode)) {
+        throw new ValidationError('Asset code must be 1-12 alphanumeric characters');
+      }
+
+      // Resolve distributor wallet from mock wallets
+      let distributorPublic = null;
+      for (const w of this.wallets.values()) {
+        if (w.secretKey === distributorSecret) { distributorPublic = w.publicKey; break; }
+      }
+      if (!distributorPublic) {
+        throw new ValidationError('Invalid distributor secret key. No matching account found.');
+      }
+
+      if (distributorPublic === recipientPublicKey) {
+        throw new ValidationError('Distributor and recipient cannot be the same account');
+      }
+
+      const parsedAmount = parseFloat(amount);
+      if (isNaN(parsedAmount) || parsedAmount <= 0) {
+        throw new ValidationError('Amount must be a positive number');
+      }
+
+      // Deduct from distributor holdings
+      if (!this.assetBalances) this.assetBalances = new Map();
+      const assetKey = `${assetCode}:${issuerPublicKey}`;
+      if (!this.assetBalances.has(assetKey)) this.assetBalances.set(assetKey, new Map());
+      const holders = this.assetBalances.get(assetKey);
+
+      const distBalance = parseFloat(holders.get(distributorPublic) || '0');
+      if (distBalance < parsedAmount) {
+        throw new ValidationError('Insufficient asset balance for distribution');
+      }
+      holders.set(distributorPublic, (distBalance - parsedAmount).toFixed(7));
+
+      // Credit recipient
+      const recipBalance = parseFloat(holders.get(recipientPublicKey) || '0');
+      holders.set(recipientPublicKey, (recipBalance + parsedAmount).toFixed(7));
+
+      const hash = `mock_distribute_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const ledger = Math.floor(Math.random() * 1000000) + 1000000;
+
+      return { hash, ledger, assetCode, issuerPublicKey, recipientPublicKey, amount: parsedAmount.toFixed(7) };
+    }, 'distributeAsset');
+  }
+
   triggerOrderbookUpdate(sellingAsset, buyingAsset, data) {
     if (!this._orderbookListeners) return;
     const key = `${sellingAsset}:${buyingAsset}`;
@@ -2402,6 +2517,159 @@ class MockStellarService extends StellarServiceInterface {
     if (!this._orderbookListeners) return 0;
     const key = `${sellingAsset}:${buyingAsset}`;
     return this._orderbookListeners.has(key) ? this._orderbookListeners.get(key).size : 0;
+  }
+
+  /**
+   * Add a trustline for an asset to an account (mock implementation).
+   * @param {string} publicKey - Account public key
+   * @param {Object} asset - Asset object with code and issuer
+   * @returns {Promise<{hash: string, ledger: number}>}
+   */
+  async addTrustline(publicKey, asset) {
+    return this._executeWithRetry(async () => {
+      await this._simulateNetworkDelay();
+      this._checkRateLimit();
+      this._validatePublicKey(publicKey);
+      this._simulateFailure();
+
+      // Validate asset code
+      if (!asset.code || !/^[A-Za-z0-9]{1,12}$/.test(asset.code)) {
+        throw new ValidationError('Asset code must be 1-12 alphanumeric characters');
+      }
+
+      // Validate issuer
+      if (!asset.issuer || !this.isValidAddress(asset.issuer)) {
+        throw new ValidationError('Invalid issuer public key');
+      }
+
+      const wallet = this.wallets.get(publicKey);
+      if (!wallet) {
+        throw new NotFoundError('Account not found', ERROR_CODES.WALLET_NOT_FOUND);
+      }
+
+      // Initialize trustlines array if it doesn't exist
+      if (!wallet.trustlines) {
+        wallet.trustlines = new Map();
+      }
+
+      const assetKey = getAssetKey(asset);
+      
+      // Check if trustline already exists
+      if (wallet.trustlines.has(assetKey)) {
+        throw new BusinessLogicError(
+          ERROR_CODES.TRANSACTION_FAILED,
+          'Trustline already exists for this asset'
+        );
+      }
+
+      // Add trustline with zero balance and maximum limit
+      wallet.trustlines.set(assetKey, {
+        asset: { code: asset.code, issuer: asset.issuer },
+        balance: '0.0000000',
+        limit: '922337203685.4775807', // Maximum Stellar limit
+        active: true
+      });
+
+      const hash = `mock_${crypto.randomBytes(16).toString('hex')}`;
+      const ledger = Math.floor(Math.random() * 1000000) + 1;
+
+      log.info('MOCK_STELLAR_SERVICE', 'Trustline added', {
+        publicKey,
+        assetCode: asset.code,
+        issuer: asset.issuer,
+        hash
+      });
+
+      return { hash, ledger };
+    });
+  }
+
+  /**
+   * Remove a trustline for an asset from an account (mock implementation).
+   * @param {string} publicKey - Account public key
+   * @param {Object} asset - Asset object with code and issuer
+   * @returns {Promise<{hash: string, ledger: number}>}
+   */
+  async removeTrustline(publicKey, asset) {
+    return this._executeWithRetry(async () => {
+      await this._simulateNetworkDelay();
+      this._checkRateLimit();
+      this._validatePublicKey(publicKey);
+      this._simulateFailure();
+
+      const wallet = this.wallets.get(publicKey);
+      if (!wallet) {
+        throw new NotFoundError('Account not found', ERROR_CODES.WALLET_NOT_FOUND);
+      }
+
+      if (!wallet.trustlines) {
+        throw new BusinessLogicError(
+          ERROR_CODES.TRANSACTION_FAILED,
+          'No trustlines exist for this account'
+        );
+      }
+
+      const assetKey = getAssetKey(asset);
+      const trustline = wallet.trustlines.get(assetKey);
+
+      if (!trustline) {
+        throw new BusinessLogicError(
+          ERROR_CODES.TRANSACTION_FAILED,
+          'Trustline does not exist for this asset'
+        );
+      }
+
+      // Check if balance is zero
+      if (parseFloat(trustline.balance) > 0) {
+        throw new ValidationError('Cannot remove trustline with non-zero balance');
+      }
+
+      // Remove trustline
+      wallet.trustlines.delete(assetKey);
+
+      const hash = `mock_${crypto.randomBytes(16).toString('hex')}`;
+      const ledger = Math.floor(Math.random() * 1000000) + 1;
+
+      log.info('MOCK_STELLAR_SERVICE', 'Trustline removed', {
+        publicKey,
+        assetCode: asset.code,
+        issuer: asset.issuer,
+        hash
+      });
+
+      return { hash, ledger };
+    });
+  }
+
+  /**
+   * Get all trustlines for an account with their balances (mock implementation).
+   * @param {string} publicKey - Account public key
+   * @returns {Promise<Array<{asset: Object, balance: string, limit: string}>>}
+   */
+  async getTrustlines(publicKey) {
+    return this._executeWithRetry(async () => {
+      await this._simulateNetworkDelay();
+      this._checkRateLimit();
+      this._validatePublicKey(publicKey);
+
+      const wallet = this.wallets.get(publicKey);
+      if (!wallet) {
+        throw new NotFoundError('Account not found', ERROR_CODES.WALLET_NOT_FOUND);
+      }
+
+      if (!wallet.trustlines) {
+        return [];
+      }
+
+      // Convert Map to array and return trustline data
+      const trustlines = Array.from(wallet.trustlines.values()).map(trustline => ({
+        asset: trustline.asset,
+        balance: trustline.balance,
+        limit: trustline.limit
+      }));
+
+      return trustlines;
+    });
   }
 }
 

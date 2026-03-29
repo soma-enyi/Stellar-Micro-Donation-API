@@ -207,6 +207,15 @@ class DuplicateError extends AppError {
   }
 }
 
+class ConflictError extends AppError {
+  constructor(
+    message = "Resource conflict",
+    errorCode = ERROR_CODES.RESOURCE_CONFLICT,
+  ) {
+    super(errorCode, message, 409);
+  }
+}
+
 module.exports = {
   ERROR_CODES,
   AppError,
