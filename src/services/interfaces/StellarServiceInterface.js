@@ -193,6 +193,55 @@ class StellarServiceInterface {
     void _publicKey;
     throw new Error('getTrustlines() must be implemented');
   }
+
+  /**
+   * Execute a strict-send path payment: send exactly sendAmount of sendAsset,
+   * receive at least minDestAmount of destAsset.
+   * @param {string} _sourceSecret
+   * @param {Object} _sendAsset
+   * @param {string} _sendAmount
+   * @param {string} _destPublicKey
+   * @param {Object} _destAsset
+   * @param {string} _minDestAmount
+   * @param {Object} [_options]
+   * @returns {Promise<Object>}
+   */
+  async pathPaymentStrictSend(_sourceSecret, _sendAsset, _sendAmount, _destPublicKey, _destAsset, _minDestAmount, _options = {}) {
+    void _sourceSecret; void _sendAsset; void _sendAmount;
+    void _destPublicKey; void _destAsset; void _minDestAmount; void _options;
+    throw new Error('pathPaymentStrictSend() must be implemented');
+  }
+
+  /**
+   * Execute a strict-receive path payment: receive exactly destAmount of destAsset,
+   * spend at most maxSendAmount of sendAsset.
+   * @param {string} _sourceSecret
+   * @param {Object} _sendAsset
+   * @param {string} _maxSendAmount
+   * @param {string} _destPublicKey
+   * @param {Object} _destAsset
+   * @param {string} _destAmount
+   * @param {Object} [_options]
+   * @returns {Promise<Object>}
+   */
+  async pathPaymentStrictReceive(_sourceSecret, _sendAsset, _maxSendAmount, _destPublicKey, _destAsset, _destAmount, _options = {}) {
+    void _sourceSecret; void _sendAsset; void _maxSendAmount;
+    void _destPublicKey; void _destAsset; void _destAmount; void _options;
+    throw new Error('pathPaymentStrictReceive() must be implemented');
+  }
+
+  /**
+   * Find available DEX conversion paths between two assets.
+   * @param {string} _sourcePublicKey
+   * @param {string} _destPublicKey
+   * @param {Object} _destAsset
+   * @param {string} _destAmount
+   * @returns {Promise<Array<Object>>}
+   */
+  async findPaymentPaths(_sourcePublicKey, _destPublicKey, _destAsset, _destAmount) {
+    void _sourcePublicKey; void _destPublicKey; void _destAsset; void _destAmount;
+    throw new Error('findPaymentPaths() must be implemented');
+  }
 }
 
 module.exports = StellarServiceInterface;

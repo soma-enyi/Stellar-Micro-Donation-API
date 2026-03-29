@@ -3,6 +3,38 @@ const path = require('path');
 
 const WALLETS_DB_PATH = './data/wallets.json';
 
+/** Encrypted field names on wallet records */
+const ENCRYPTED_FIELDS = ['label', 'notes'];
+
+function getEncryptionService() {
+  // Lazy-require to avoid circular deps and allow tests to override env
+  return require('../../services/EncryptionService');
+}
+
+function encryptWalletFields(wallet) {
+  if (!process.env.ENCRYPTION_KEY && !process.env.ENCRYPTION_KEY_1) return wallet;
+  const svc = getEncryptionService();
+  const result = { ...wallet };
+  for (const field of ENCRYPTED_FIELDS) {
+    if (result[field] != null) {
+      result[field] = svc.encryptField(result[field]);
+    }
+  }
+  return result;
+}
+
+function decryptWalletFields(wallet) {
+  if (!wallet) return wallet;
+  const svc = getEncryptionService();
+  const result = { ...wallet };
+  for (const field of ENCRYPTED_FIELDS) {
+    if (result[field] != null) {
+      try { result[field] = svc.decryptField(result[field]); } catch (_) { /* leave as-is */ }
+    }
+  }
+  return result;
+}
+
 class Wallet {
   static ensureDbDir() {
     const dir = path.dirname(WALLETS_DB_PATH);
@@ -42,7 +74,7 @@ class Wallet {
       last_cursor: null,
       ...walletData
     };
-    wallets.push(newWallet);
+    wallets.push(encryptWalletFields(newWallet));
     this.saveWallets(wallets);
     return newWallet;
   }
@@ -52,7 +84,7 @@ class Wallet {
    */
   static getAll() {
     const wallets = this.loadWallets();
-    return wallets.filter(w => !w.deletedAt);
+    return wallets.filter(w => !w.deletedAt).map(decryptWalletFields);
   }
 
   /**
@@ -60,7 +92,7 @@ class Wallet {
    */
   static getById(id) {
     const wallets = this.loadWallets();
-    return wallets.find(w => w.id === id && !w.deletedAt);
+    return decryptWalletFields(wallets.find(w => w.id === id && !w.deletedAt));
   }
 
   /**
@@ -68,7 +100,7 @@ class Wallet {
    */
   static getByAddress(address) {
     const wallets = this.loadWallets();
-    return wallets.find(w => w.address === address && !w.deletedAt);
+    return decryptWalletFields(wallets.find(w => w.address === address && !w.deletedAt));
   }
 
   /**
@@ -84,13 +116,13 @@ class Wallet {
     const index = wallets.findIndex(w => w.id === id && !w.deletedAt);
     if (index === -1) return null;
 
-    wallets[index] = {
+    wallets[index] = encryptWalletFields({
       ...wallets[index],
       ...updates,
       updatedAt: new Date().toISOString()
-    };
+    });
     this.saveWallets(wallets);
-    return wallets[index];
+    return decryptWalletFields(wallets[index]);
   }
 
   /**
@@ -108,3 +140,6 @@ class Wallet {
 }
 
 module.exports = Wallet;
+module.exports.ENCRYPTED_FIELDS = ENCRYPTED_FIELDS;
+module.exports.encryptWalletFields = encryptWalletFields;
+module.exports.decryptWalletFields = decryptWalletFields;

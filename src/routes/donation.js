@@ -190,10 +190,22 @@ const createDonationSchema = validateSchema({
         nullable: true,
         maxLength: 128,
       },
+      sdgCategories: {
+        type: 'array',
+        required: false,
+        nullable: true,
+      },
     },
     validate: (body) => {
       if ((body.sourceAsset && !body.sourceAmount) || (!body.sourceAsset && body.sourceAmount)) {
         return 'sourceAsset and sourceAmount must be provided together';
+      }
+      if (body.sdgCategories && Array.isArray(body.sdgCategories)) {
+        const { validateSdgCodes } = require('../services/ImpactMetricService');
+        const { valid, invalid } = validateSdgCodes(body.sdgCategories);
+        if (!valid) {
+          return `Invalid SDG category codes: ${invalid.join(', ')}. Valid codes are SDG1–SDG17.`;
+        }
       }
       // Validate memoHash: must be exactly 32 bytes as hex (64 chars) or base64 (44 chars)
       if (body.memoHash) {
@@ -584,6 +596,7 @@ router.post('/', payloadSizeLimiter(ENDPOINT_LIMITS.singleDonation), donationRat
       poolName,
       donorLatitude,
       donorLongitude,
+      sdgCategories,
     } = req.body;
 
     // Determine recipient — either explicit or via routing
@@ -740,6 +753,7 @@ router.post('/', payloadSizeLimiter(ENDPOINT_LIMITS.singleDonation), donationRat
       apiKeyId: req.apiKey ? req.apiKey.id : null,
       apiKeyRole: req.apiKey ? req.apiKey.role : (req.user?.role || 'user'),
       anonymous: anonymous === true,
+      sdgCategories: sdgCategories || [],
     });
 
     // Estimate fee for informational purposes (non-blocking)
@@ -1565,6 +1579,160 @@ router.get('/:id/impact', checkPermission(PERMISSIONS.DONATIONS_READ), donationI
         impact,
       },
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── Cross-Asset Donations ────────────────────────────────────────────────────
+
+const crossAssetSchema = validateSchema({
+  body: {
+    fields: {
+      sourceSecret: { type: 'string', required: true },
+      sendAsset: { types: ['string', 'object'], required: true },
+      destPublicKey: { type: 'string', required: true },
+      destAsset: { types: ['string', 'object'], required: true },
+      slippageTolerance: { type: 'number', required: false },
+      memo: { type: 'string', required: false, maxLength: 255, nullable: true },
+    },
+    validate: (body) => {
+      if (body.sendAmount === undefined && body.destAmount === undefined) {
+        return 'Either sendAmount or destAmount is required';
+      }
+      if (body.sendAmount !== undefined && body.destAmount !== undefined) {
+        return 'Provide either sendAmount (strict-send) or destAmount (strict-receive), not both';
+      }
+      const tol = body.slippageTolerance;
+      if (tol !== undefined && (typeof tol !== 'number' || tol < 0 || tol > 1)) {
+        return 'slippageTolerance must be a number between 0 and 1';
+      }
+      return null;
+    },
+  },
+});
+
+const crossAssetPathsSchema = validateSchema({
+  query: {
+    fields: {
+      sourcePublicKey: { type: 'string', required: true },
+      destPublicKey: { type: 'string', required: true },
+      destAsset: { type: 'string', required: true },
+      destAmount: { type: 'numberString', required: true },
+    },
+  },
+});
+
+/**
+ * POST /donations/cross-asset
+ * Execute a cross-asset donation via Stellar DEX path payment.
+ *
+ * Strict-send: provide sendAmount — sends exactly that amount, recipient gets at least
+ *   sendAmount * (1 - slippageTolerance) of destAsset.
+ * Strict-receive: provide destAmount — recipient gets exactly that amount, sender spends
+ *   at most destAmount / rate * (1 + slippageTolerance) of sendAsset.
+ *
+ * Body:
+ *   - sourceSecret {string} required
+ *   - sendAsset {string|object} required — "native" or {code, issuer}
+ *   - sendAmount {string} — for strict-send
+ *   - destPublicKey {string} required
+ *   - destAsset {string|object} required
+ *   - destAmount {string} — for strict-receive
+ *   - slippageTolerance {number} optional, 0–1, default 0.01 (1%)
+ *   - memo {string} optional
+ */
+router.post('/cross-asset', payloadSizeLimiter(ENDPOINT_LIMITS.singleDonation), donationRateLimiter, requireApiKey, requireIdempotency, crossAssetSchema, async (req, res, next) => {
+  try {
+    const {
+      sourceSecret,
+      sendAsset: rawSendAsset,
+      sendAmount,
+      destPublicKey,
+      destAsset: rawDestAsset,
+      destAmount,
+      slippageTolerance = 0.01,
+      memo,
+    } = req.body;
+
+    const sendAsset = parseAssetInput(rawSendAsset, 'sendAsset');
+    const destAsset = parseAssetInput(rawDestAsset, 'destAsset');
+
+    let result;
+
+    if (sendAmount !== undefined) {
+      // Strict-send: compute minDestAmount from slippage
+      const route = await stellarService.discoverBestPath({ sourceAsset: sendAsset, sourceAmount: sendAmount, destAsset });
+      if (!route) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'NO_PATH_FOUND', message: 'No conversion path found between the specified assets' },
+        });
+      }
+      const minDestAmount = (parseFloat(route.destAmount) * (1 - slippageTolerance)).toFixed(7);
+      result = await stellarService.pathPaymentStrictSend(
+        sourceSecret, sendAsset, sendAmount, destPublicKey, destAsset, minDestAmount, { memo }
+      );
+    } else {
+      // Strict-receive: compute maxSendAmount from slippage
+      const route = await stellarService.discoverBestPath({ sourceAsset: sendAsset, destAsset, destAmount });
+      if (!route) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'NO_PATH_FOUND', message: 'No conversion path found between the specified assets' },
+        });
+      }
+      const maxSendAmount = (parseFloat(route.sourceAmount) * (1 + slippageTolerance)).toFixed(7);
+      result = await stellarService.pathPaymentStrictReceive(
+        sourceSecret, sendAsset, maxSendAmount, destPublicKey, destAsset, destAmount, { memo }
+      );
+    }
+
+    const response = { success: true, data: result };
+    await storeIdempotencyResponse(req, response);
+    return res.status(201).json(response);
+  } catch (error) {
+    if (error.message && error.message.includes('Slippage tolerance exceeded')) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'SLIPPAGE_EXCEEDED', message: error.message },
+      });
+    }
+    if (error.message && error.message.includes('No payment path')) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'NO_PATH_FOUND', message: error.message },
+      });
+    }
+    next(error);
+  }
+});
+
+/**
+ * GET /donations/cross-asset/paths
+ * Preview available DEX conversion paths before committing to a cross-asset donation.
+ *
+ * Query params:
+ *   - sourcePublicKey {string} required
+ *   - destPublicKey {string} required
+ *   - destAsset {string} required — "native" or JSON {code, issuer}
+ *   - destAmount {string} required
+ */
+router.get('/cross-asset/paths', requireApiKey, crossAssetPathsSchema, async (req, res, next) => {
+  try {
+    const { sourcePublicKey, destPublicKey, destAsset: rawDestAsset, destAmount } = req.query;
+
+    const destAsset = parseAssetInput(rawDestAsset, 'destAsset');
+    const paths = await stellarService.findPaymentPaths(sourcePublicKey, destPublicKey, destAsset, destAmount);
+
+    if (paths.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'NO_PATH_FOUND', message: 'No conversion paths found for the specified assets and amount' },
+      });
+    }
+
+    return res.status(200).json({ success: true, data: { paths } });
   } catch (error) {
     next(error);
   }

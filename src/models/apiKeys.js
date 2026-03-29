@@ -492,6 +492,48 @@ async function markExpiryNotificationSent(id, thresholdDays) {
     `UPDATE api_keys SET last_expiry_notification_sent_at = ? WHERE id = ?`,
     [thresholdDays, id]
   );
+  // Also persist to the notices log table (idempotent — ignore duplicate)
+  try {
+    await db.run(
+      `CREATE TABLE IF NOT EXISTS api_key_expiration_notices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        api_key_id INTEGER NOT NULL,
+        threshold_days INTEGER NOT NULL,
+        sent_at INTEGER NOT NULL
+      )`
+    );
+    await db.run(
+      `INSERT INTO api_key_expiration_notices (api_key_id, threshold_days, sent_at)
+       VALUES (?, ?, ?)`,
+      [id, thresholdDays, Date.now()]
+    );
+  } catch (_) { /* best-effort */ }
+}
+
+/**
+ * List all expiration notices sent for a given API key.
+ * @param {number} keyId
+ * @returns {Promise<Array<{id, thresholdDays, sentAt}>>}
+ */
+async function getExpirationNotices(keyId) {
+  try {
+    await db.run(
+      `CREATE TABLE IF NOT EXISTS api_key_expiration_notices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        api_key_id INTEGER NOT NULL,
+        threshold_days INTEGER NOT NULL,
+        sent_at INTEGER NOT NULL
+      )`
+    );
+    const rows = await db.all(
+      `SELECT id, threshold_days, sent_at FROM api_key_expiration_notices
+       WHERE api_key_id = ? ORDER BY sent_at DESC`,
+      [keyId]
+    );
+    return rows.map(r => ({ id: r.id, thresholdDays: r.threshold_days, sentAt: r.sent_at }));
+  } catch (_) {
+    return [];
+  }
 }
 
 module.exports = {
@@ -512,4 +554,5 @@ module.exports = {
   getNextMonthFirstDay,
   getKeysExpiringWithin,
   markExpiryNotificationSent,
+  getExpirationNotices,
 };

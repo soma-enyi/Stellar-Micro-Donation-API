@@ -210,6 +210,71 @@ class EncryptionService {
   resetKeyPair() {
     this._keyPair = null;
   }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Field-level encryption (AES-256-GCM, key-versioned)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Derive a 32-byte AES key from a versioned env var.
+   * Reads ENCRYPTION_KEY_<version> (or ENCRYPTION_KEY for version 1).
+   *
+   * @param {number} version - Key version number
+   * @returns {Buffer} 32-byte key
+   * @private
+   */
+  _getFieldKey(version) {
+    const raw = version === 1
+      ? (process.env[`ENCRYPTION_KEY_1`] || process.env.ENCRYPTION_KEY)
+      : process.env[`ENCRYPTION_KEY_${version}`];
+    if (!raw) throw new Error(`No encryption key configured for version ${version}`);
+    return crypto.createHash('sha256').update(raw).digest();
+  }
+
+  /**
+   * Encrypt a string field for storage at rest.
+   * Ciphertext format: "v<version>:<iv_hex>:<ct_hex>:<tag_hex>"
+   *
+   * @param {string} value - Plaintext value to encrypt
+   * @param {number} [keyVersion] - Key version to use (defaults to ENCRYPTION_KEY_VERSION env var, or 1)
+   * @returns {string} Encrypted ciphertext string
+   */
+  encryptField(value, keyVersion) {
+    if (value === null || value === undefined) return value;
+    const version = keyVersion || parseInt(process.env.ENCRYPTION_KEY_VERSION || '1', 10);
+    const key = this._getFieldKey(version);
+    const iv = crypto.randomBytes(GCM_IV_BYTES);
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+    let ct = cipher.update(String(value), 'utf8', 'hex');
+    ct += cipher.final('hex');
+    const tag = cipher.getAuthTag().toString('hex');
+    return `v${version}:${iv.toString('hex')}:${ct}:${tag}`;
+  }
+
+  /**
+   * Decrypt a field-level ciphertext produced by encryptField.
+   * Automatically selects the correct key version from the ciphertext prefix.
+   *
+   * @param {string} ciphertext - Encrypted string from encryptField
+   * @returns {string} Decrypted plaintext
+   */
+  decryptField(ciphertext) {
+    if (ciphertext === null || ciphertext === undefined) return ciphertext;
+    // Not encrypted (plaintext stored before encryption was enabled)
+    if (!String(ciphertext).startsWith('v')) return ciphertext;
+    const parts = String(ciphertext).split(':');
+    if (parts.length !== 4) throw new Error('Invalid encrypted field format');
+    const version = parseInt(parts[0].slice(1), 10);
+    const key = this._getFieldKey(version);
+    const iv = Buffer.from(parts[1], 'hex');
+    const ct = parts[2];
+    const tag = Buffer.from(parts[3], 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(tag);
+    let plain = decipher.update(ct, 'hex', 'utf8');
+    plain += decipher.final('utf8');
+    return plain;
+  }
 }
 
 // Export a singleton — one key pair per process

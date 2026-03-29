@@ -591,6 +591,23 @@ router.delete('/:id/totp', requireAdmin(), apiKeyIdParamSchema, async (req, res,
   }
 });
 
+// ─── Expiration Notices ───────────────────────────────────────────────────────
+
+/**
+ * GET /api-keys/:id/expiration-notices
+ * List all expiration notifications sent for a given API key (admin only).
+ */
+router.get('/:id/expiration-notices', requireAdmin(), apiKeyIdParamSchema, async (req, res, next) => {
+  try {
+    const { value: keyId } = validateInteger(req.params.id, { min: 1 });
+    const { getExpirationNotices } = require('../models/apiKeys');
+    const notices = await getExpirationNotices(keyId);
+    res.json({ success: true, data: { keyId, notices } });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ─── Anomaly Detection ────────────────────────────────────────────────────────
 
 const anomalyDetectionService = require('../services/AnomalyDetectionService');

@@ -513,6 +513,7 @@ class DonationService {
     validBefore = 0,
     memoEnvelope = null,
     encryptionMetadata = null,
+    sdgCategories = [],
   }) {
     // Sanitize identifiers
     const rawDonor = donor ? sanitizeIdentifier(donor) : 'Anonymous';
@@ -712,6 +713,7 @@ class DonationService {
       // Time-bound transaction fields
       validAfter: validAfter || 0,
       validBefore: validBefore || 0,
+      sdgCategories: sdgCategories || [],
     });
 
     if (campaign_id) {

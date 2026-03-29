@@ -13,6 +13,43 @@ const Database = require('../utils/database');
 const { NotFoundError, ValidationError, ERROR_CODES } = require('../utils/errors');
 const log = require('../utils/log');
 
+/**
+ * UN Sustainable Development Goals — 17 SDGs with codes and descriptions.
+ * @type {Array<{code: string, goal: number, title: string, description: string}>}
+ */
+const SDG_CATEGORIES = [
+  { code: 'SDG1',  goal: 1,  title: 'No Poverty',                description: 'End poverty in all its forms everywhere' },
+  { code: 'SDG2',  goal: 2,  title: 'Zero Hunger',               description: 'End hunger, achieve food security and improved nutrition' },
+  { code: 'SDG3',  goal: 3,  title: 'Good Health and Well-being', description: 'Ensure healthy lives and promote well-being for all' },
+  { code: 'SDG4',  goal: 4,  title: 'Quality Education',          description: 'Ensure inclusive and equitable quality education' },
+  { code: 'SDG5',  goal: 5,  title: 'Gender Equality',            description: 'Achieve gender equality and empower all women and girls' },
+  { code: 'SDG6',  goal: 6,  title: 'Clean Water and Sanitation', description: 'Ensure availability and sustainable management of water' },
+  { code: 'SDG7',  goal: 7,  title: 'Affordable and Clean Energy', description: 'Ensure access to affordable, reliable, sustainable energy' },
+  { code: 'SDG8',  goal: 8,  title: 'Decent Work and Economic Growth', description: 'Promote sustained, inclusive economic growth' },
+  { code: 'SDG9',  goal: 9,  title: 'Industry, Innovation and Infrastructure', description: 'Build resilient infrastructure and foster innovation' },
+  { code: 'SDG10', goal: 10, title: 'Reduced Inequalities',       description: 'Reduce inequality within and among countries' },
+  { code: 'SDG11', goal: 11, title: 'Sustainable Cities and Communities', description: 'Make cities inclusive, safe, resilient and sustainable' },
+  { code: 'SDG12', goal: 12, title: 'Responsible Consumption and Production', description: 'Ensure sustainable consumption and production patterns' },
+  { code: 'SDG13', goal: 13, title: 'Climate Action',             description: 'Take urgent action to combat climate change' },
+  { code: 'SDG14', goal: 14, title: 'Life Below Water',           description: 'Conserve and sustainably use the oceans and marine resources' },
+  { code: 'SDG15', goal: 15, title: 'Life on Land',               description: 'Protect, restore and promote sustainable use of terrestrial ecosystems' },
+  { code: 'SDG16', goal: 16, title: 'Peace, Justice and Strong Institutions', description: 'Promote peaceful and inclusive societies' },
+  { code: 'SDG17', goal: 17, title: 'Partnerships for the Goals', description: 'Strengthen the means of implementation and revitalize global partnerships' },
+];
+
+const VALID_SDG_CODES = new Set(SDG_CATEGORIES.map(s => s.code));
+
+/**
+ * Validate an array of SDG category codes.
+ * @param {string[]} codes
+ * @returns {{ valid: boolean, invalid: string[] }}
+ */
+function validateSdgCodes(codes) {
+  if (!Array.isArray(codes)) return { valid: false, invalid: [] };
+  const invalid = codes.filter(c => !VALID_SDG_CODES.has(c));
+  return { valid: invalid.length === 0, invalid };
+}
+
 class ImpactMetricService {
   /**
    * Create a new impact metric for a campaign.
@@ -124,3 +161,6 @@ class ImpactMetricService {
 }
 
 module.exports = ImpactMetricService;
+module.exports.SDG_CATEGORIES = SDG_CATEGORIES;
+module.exports.VALID_SDG_CODES = VALID_SDG_CODES;
+module.exports.validateSdgCodes = validateSdgCodes;

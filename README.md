@@ -14,7 +14,6 @@ A Node.js/Express API for managing micro-donations on the Stellar blockchain net
 - [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
 - [Documentation](#documentation)
-
 ## ✨ Features
 
 - **One-Time Donations**: Create and verify donations on Stellar testnet/mainnet

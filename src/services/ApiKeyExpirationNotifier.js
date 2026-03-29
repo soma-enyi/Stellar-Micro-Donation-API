@@ -23,10 +23,18 @@ const {
   markExpiryNotificationSent,
   initializeApiKeysTable,
 } = require('../models/apiKeys');
-const db = require('../utils/database');
 
-/** Notification thresholds in ascending order (smallest = most urgent). */
-const EXPIRY_THRESHOLDS_DAYS = [1, 7];
+/** Notification thresholds in ascending order (smallest = most urgent).
+ *  Configurable via API_KEY_EXPIRY_WARN_DAYS env var (comma-separated, e.g. "30,7,1").
+ *  Default: [1, 7, 30]
+ */
+function parseWarnDays() {
+  const raw = process.env.API_KEY_EXPIRY_WARN_DAYS;
+  if (!raw) return [1, 7, 30];
+  return raw.split(',').map(s => parseInt(s.trim(), 10)).filter(n => Number.isFinite(n) && n > 0).sort((a, b) => a - b);
+}
+
+const EXPIRY_THRESHOLDS_DAYS = parseWarnDays();
 
 /** Window (days) within which we consider a key "just expired". */
 const EXPIRED_WINDOW_DAYS = 1;
@@ -194,7 +202,7 @@ class ApiKeyExpirationNotifier {
 
     const event = thresholdDays === 0
       ? 'api_key.expired'
-      : `api_key.expiring_in_${thresholdDays}_days`;
+      : 'api_key.expiring';
 
     const body = JSON.stringify({
       event,
