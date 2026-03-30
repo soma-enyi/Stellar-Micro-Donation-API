@@ -238,5 +238,29 @@
     "originalFee": null,
     "currentFee": null,
     "lastFeeBumpAt": null
+  },
+  {
+    "amount": 10,
+    "donor": "GD donor",
+    "recipient": "GD recipient",
+    "status": "confirmed",
+    "envelopeXdr": "AAAAAgAAAABnu6DlvW89y4qXgZ23bA1w8sX/uV6G9v9Y4L+0N1m4WAAAAZAABm8wAAAABAAAAAAAAAAAAAAABAAAAAAAAAAEAAAAA57ug5b1vPcuKl4Gdt2wNcPLF/7lehvb/WOC/tDdZuFgAAAAAAAAAAACYloAAAAAAAAAAAA==",
+    "id": "7af42e3c-b63f-4bde-a7e1-021145661281",
+    "memo": "",
+    "memoType": "text",
+    "memoHash": null,
+    "encryptionMetadata": null,
+    "memoEnvelope": null,
+    "notes": null,
+    "tags": [],
+    "apiKeyId": null,
+    "timestamp": "2026-03-30T01:41:30.637Z",
+    "stellarTxId": null,
+    "stellarLedger": null,
+    "statusUpdatedAt": "2026-03-30T01:41:30.637Z",
+    "feeBumpCount": 0,
+    "originalFee": null,
+    "currentFee": null,
+    "lastFeeBumpAt": null
   }
 ]

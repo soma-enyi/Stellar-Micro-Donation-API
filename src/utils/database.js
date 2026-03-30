@@ -480,6 +480,7 @@ class Database {
       return;
     }
 
+    state.closing = false; // Ensure we reset closing state if re-initializing
     state.initializing = (async () => {
       const config = this.getPoolConfiguration();
       const performanceConfig = this.getPerformanceConfiguration();
@@ -873,9 +874,11 @@ class Database {
    * @private
    */
   static _startHealthCheck() {
-    if (this._healthCheckTimer) return;
-    if (process.env.NODE_ENV === 'test') return;
-    
+    if (this._healthCheckTimer)  skip: (req) => {
+    return process.env.NODE_ENV === 'test' || (req.idempotency && req.idempotency.cached);
+  },
+  validate: false
+});  
     this._healthCheckTimer = setInterval(() => {
       this._runHealthCheck().catch(() => {});
     }, HEALTH_CHECK_INTERVAL_MS);
