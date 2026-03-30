@@ -136,6 +136,7 @@ const router = express.Router();
 const Transaction = require('../models/transaction');
 const TransactionSyncService = require('../../services/TransactionSyncService');
 const { buildErrorResponse } = require('../../utils/validationErrorFormatter');
+const sseManager = require('../../services/SseManager');
 
 const multiSigService = new MultiSigService(serviceContainer.getStellarService());
 
@@ -501,3 +502,40 @@ router.post(
 
 module.exports = router;
 
+/**
+ * GET /transactions/stream
+ * SSE endpoint for real-time confirmed transaction events.
+ * Query params: ?walletAddress=  ?campaignId=
+ * Header: x-api-key (used as connection key; defaults to 'anonymous')
+ */
+router.get('/stream', (req, res) => {
+  const apiKey = req.headers['x-api-key'] || 'anonymous';
+  const filters = {
+    walletAddress: req.query.walletAddress || null,
+    campaignId: req.query.campaignId || null,
+  };
+
+  const { added, limitExceeded } = sseManager.addClient(apiKey, res, filters);
+
+  if (limitExceeded) {
+    return res.status(429).json({
+      success: false,
+      error: { code: 'CONNECTION_LIMIT_EXCEEDED', message: 'Max 5 concurrent SSE connections per API key' },
+    });
+  }
+
+  if (!added) {
+    return res.status(500).json({ success: false, error: { code: 'SSE_ERROR', message: 'Failed to add SSE client' } });
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  // Send initial connection event
+  res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
+});
+
+module.exports = router;
+module.exports.sseManager = sseManager;

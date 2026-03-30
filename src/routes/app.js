@@ -24,6 +24,8 @@ const recurringDonationScheduler = require('../services/RecurringDonationSchedul
 const NetworkStatusService = require('../services/NetworkStatusService');
 const { router: networkRoutes, setService: setNetworkService } = require('./network');
 const docsRoutes = require('./docs');
+const transactionRoutes = require('./transaction');
+const sseManager = require('../services/SseManager');
 
 const app = express();
 
@@ -163,6 +165,7 @@ app.use('/stats', statsRoutes);
 app.use('/stream', streamRoutes);
 app.use('/network', networkRoutes);
 app.use('/docs', docsRoutes);
+app.use('/transactions', transactionRoutes);
 
 // Health check endpoint
 // Health check endpoints
@@ -252,6 +255,9 @@ app.listen(PORT, () => {
   
   // Start the recurring donation scheduler
   recurringDonationScheduler.start();
+
+  // Start SSE manager heartbeat
+  sseManager.start();
 
   // Start network status monitoring
   const networkStatusService = new NetworkStatusService({ horizonUrl: config.horizonUrl });
