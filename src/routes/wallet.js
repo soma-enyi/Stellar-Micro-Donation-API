@@ -118,7 +118,6 @@ const { buildErrorResponse } = require('../utils/validationErrorFormatter');
  * POST /wallets
  * Create a new wallet with metadata. Auto-funds via Friendbot on testnet.
  */
-router.post('/', checkPermission(PERMISSIONS.WALLETS_CREATE), walletCreateSchema, async (req, res) => {});
 router.post('/', payloadSizeLimiter(ENDPOINT_LIMITS.wallet), checkPermission(PERMISSIONS.WALLETS_CREATE), walletCreateSchema, async (req, res, next) => {
   try {
     const { address, label, ownerName, sponsored } = req.body;
@@ -1317,8 +1316,6 @@ router.get('/:id/trustlines', checkPermission(PERMISSIONS.WALLETS_READ), trustli
     next(error);
   }
 });
-
-module.exports = router;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /wallets/bulk-import

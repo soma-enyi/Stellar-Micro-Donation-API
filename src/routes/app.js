@@ -25,8 +25,74 @@ const NetworkStatusService = require('../services/NetworkStatusService');
 const { router: networkRoutes, setService: setNetworkService } = require('./network');
 const docsRoutes = require('./docs');
 const transactionRoutes = require('./transaction');
-const sseManager = require('../services/SseManager');
+const apiKeysRoutes = require('./apiKeys');
+const apiKeyUsageRoutes = require('./apiKeyUsage');
+const recurringDonationRoutes = require('./recurringDonation');
+const channelRoutes = require('./channels');
+const assetRoutes = require('./assets');
+const feesRoutes = require('./fees');
+const featureFlagsAdminRoutes = require('./admin/featureFlags');
+const createFeeBumpRouter = require('./admin/feeBump');
+const dbAdminRoutes = require('./admin/db');
+const adminTracesRoutes = require('./admin/traces');
+const retentionAdminRoutes = require('./admin/retention');
+const backupAdminRoutes = require('./admin/backup');
+const encryptionAdminRoutes = require('./admin/encryption');
+const matchingProgramsAdminRoutes = require('./admin/matchingPrograms');
+const corporateMatchingAdminRoutes = require('./admin/corporateMatching');
 const { router: corporateMatchingRoutes } = require('./corporateMatching');
+const routingAdminRoutes = require('./admin/routing');
+const impactMetricsAdminRoutes = require('./admin/impactMetrics');
+const impactRoutes = require('./impact');
+const adminAnalyticsRoutes = require('./admin/analytics');
+const adminInspectRoutes = require('./admin/inspect');
+const reconciliationAdminRoutes = require('./admin/reconciliation');
+const webhooksRoutes = require('./webhooks');
+const campaignsRoutes = require('./campaigns');
+const tiersRoutes = require('./tiers');
+const offersRoutes = require('./offers');
+const tagsRoutes = require('./tags');
+const leaderboardRoutes = require('./leaderboard');
+const { router: federationLookupRoutes } = require('./federationLookup');
+const { errorHandler, notFoundHandler } = require('../middleware/errorHandler');
+const logger = require('../middleware/logger');
+const { attachUserRole } = require('../middleware/rbac');
+const abuseDetectionMiddleware = require('../middleware/abuseDetection');
+const replayDetectionMiddleware = require('../middleware/replayDetection');
+const Database = require('../utils/database');
+const HealthCheckService = require('../services/HealthCheckService');
+const { initializeApiKeysTable } = require('../models/apiKeys');
+const WebhookService = require('../services/WebhookService');
+const { validateRBAC } = require('../utils/rbacValidator');
+const log = require('../utils/log');
+const requestId = require('../middleware/requestId');
+const { attachLifecycleTracking } = require('../middleware/requestLifecycle');
+const serviceContainer = require('../config/serviceContainer');
+const { payloadSizeLimiter } = require('../middleware/payloadSizeLimiter');
+const { createCorsMiddleware } = require('../middleware/cors');
+const { createCspMiddleware, cspReportRouter } = require('../middleware/csp');
+const { responseFormatterMiddleware } = require('../utils/responseFormatter');
+const trackQuotaUsage = require('../middleware/quotaTracker');
+const { startQuotaResetJob } = require('../jobs/quotaResetJob');
+const { createDeduplicationMiddleware } = require('../middleware/deduplication');
+const { fieldFilterMiddleware } = require('../middleware/fieldFilter');
+const {
+  logStartupDiagnostics,
+  logShutdownDiagnostics,
+} = require("../utils/startupDiagnostics");
+const { parseCursorPaginationQuery } = require('../utils/pagination');
+const AuditLogService = require('../services/AuditLogService');
+const auditLogRetentionService = require('../services/AuditLogRetentionService');
+const { runCleanup } = require('../jobs/cleanupJob');
+const { requireAdmin } = require('../middleware/rbac');
+const requireApiKey = require('../middleware/apiKey');
+const encryptionRoutes = require('./encryption');
+const authRoutes = require('./auth');
+const toolsRoutes = require('./tools');
+const { metricsMiddleware, registry } = require('../utils/metrics');
+const { attachSubscriptionServer } = require('../graphql');
+const sseManager = require('../services/SseManager');
+const claimableBalancesRoutes = require('./claimableBalances');
 
 const app = express();
 
@@ -165,9 +231,71 @@ app.use('/assets', assetRoutes);
 app.use('/stats', statsRoutes);
 app.use('/stream', streamRoutes);
 app.use('/network', networkRoutes);
+app.use('/webhooks', webhooksRoutes);
+app.use('/campaigns', campaignsRoutes);
+app.use('/encryption', encryptionRoutes);
+app.use('/tiers', tiersRoutes);
+app.use('/offers', offersRoutes);
+app.use('/orderbook/:baseAsset/:counterAsset', require('./orderbook'));
+app.use('/tags', tagsRoutes);
+app.use('/leaderboard', leaderboardRoutes);
+app.use('/federation', federationLookupRoutes);
+app.use('/tools', toolsRoutes);
+app.use('/auth', authRoutes);
 app.use('/docs', docsRoutes);
 app.use('/transactions', transactionRoutes);
 app.use('/', corporateMatchingRoutes);
+app.use('/claimable-balances', claimableBalancesRoutes);
+
+// Exchange rates endpoint
+app.get('/exchange-rates', async (req, res) => {
+  try {
+    const priceOracle = require('../services/PriceOracleService');
+    const rates = await priceOracle.getRates();
+    res.json({
+      success: true,
+      data: {
+        base: 'XLM',
+        rates,
+        supportedCurrencies: ['XLM', ...priceOracle.SUPPORTED_CURRENCIES.map(c => c.toUpperCase())],
+        cachedAt: new Date().toISOString(),
+      },
+    });
+  } catch (err) {
+    log.error('APP', 'Failed to fetch exchange rates', { error: err.message });
+    res.status(503).json({
+      success: false,
+      error: { code: 'EXCHANGE_RATE_UNAVAILABLE', message: err.message },
+    });
+  }
+});
+
+// SEP-0010 Stellar TOML discovery endpoint
+app.get('/.well-known/stellar.toml', (req, res) => {
+  const host = req.get('host') || 'localhost';
+  const scheme = req.protocol || 'https';
+  const authServer = `${scheme}://${host}/auth`;
+  const signingKey = process.env.SERVICE_SIGNING_KEY || process.env.SERVICE_SECRET_KEY || process.env.STELLAR_SECRET || '';
+
+  // Minimal SEP-0010 fields
+  const tomlContents = [];
+  tomlContents.push('VERSION = "1.0.0"');
+  tomlContents.push(`AUTH_SERVER = "${authServer}"`);
+  if (signingKey) {
+    tomlContents.push(`SIGNING_KEY = "${StellarSdk.Keypair.fromSecret(signingKey).publicKey()}"`);
+  }
+
+  res.type('text/plain').send(tomlContents.join('\n'));
+});
+
+// ─── OpenAPI / Swagger UI (issue #634) ───────────────────────────────────────
+try {
+  const { spec, swaggerUiMiddleware, swaggerUiSetup } = require('../config/openapi');
+  app.use('/api/docs', swaggerUiMiddleware, swaggerUiSetup);
+  app.get('/api/openapi.json', (req, res) => res.json(spec));
+} catch (_err) {
+  // swagger-jsdoc / swagger-ui-express not installed — skip silently
+}
 
 // Health check endpoint
 // Health check endpoints
@@ -249,54 +377,128 @@ app.get('/suspicious-patterns', require('../middleware/rbac').requireAdmin(), (r
   });
 });
 
-// ── Donation Velocity Limits (admin) ──────────────────────────────────────
-const DonationVelocityService = require('../services/DonationVelocityService');
+// Transaction inspection (admin only)
+app.use('/admin/inspect/xdr', require('../middleware/rbac').requireAdmin(), adminInspectRoutes);
 
-app.post('/admin/recipients/:id/limits', require('../middleware/rbac').requireAdmin(), async (req, res, next) => {
+// Audit logs endpoint (admin only)
+app.get('/admin/audit-logs', require('../middleware/rbac').requireAdmin(), async (req, res, next) => {
   try {
-    const recipientId = parseInt(req.params.id, 10);
-    if (isNaN(recipientId)) return res.status(400).json({ success: false, error: { message: 'Invalid recipient ID' } });
-    const { maxAmount, maxCount, windowType } = req.body;
-    await DonationVelocityService.setLimits(recipientId, { maxAmount, maxCount, windowType });
-    const limits = await DonationVelocityService.getLimits(recipientId);
-    res.status(201).json({ success: true, data: limits, timestamp: new Date().toISOString() });
-  } catch (err) {
-    if (err.status === 400 || err.status === 404) return res.status(err.status).json({ success: false, error: { message: err.message } });
-    next(err);
+    const pagination = parseCursorPaginationQuery(req.query);
+    const filters = {
+      category: req.query.category,
+      action: req.query.action,
+      severity: req.query.severity,
+      userId: req.query.userId,
+      requestId: req.query.requestId,
+      startDate: req.query.startDate,
+      endDate: req.query.endDate,
+    };
+
+    const result = await AuditLogService.queryPaginated(filters, pagination);
+
+    res.setHeader('X-Total-Count', String(result.totalCount));
+    res.json({
+      success: true,
+      data: result.data,
+      count: result.data.length,
+      meta: result.meta
+    });
+  } catch (error) {
+    next(error);
   }
 });
 
-app.get('/admin/recipients/:id/limits', require('../middleware/rbac').requireAdmin(), async (req, res, next) => {
+// Manual reconciliation trigger (admin only)
+app.post('/reconcile', require('../middleware/rbac').requireAdmin(), async (req, res, next) => {
   try {
-    const recipientId = parseInt(req.params.id, 10);
-    if (isNaN(recipientId)) return res.status(400).json({ success: false, error: { message: 'Invalid recipient ID' } });
-    const limits = await DonationVelocityService.getLimits(recipientId);
-    if (!limits) return res.status(404).json({ success: false, error: { message: 'No velocity limits configured for this recipient' } });
-    res.json({ success: true, data: limits, timestamp: new Date().toISOString() });
-  } catch (err) {
-    next(err);
+    if (reconciliationService.reconciliationInProgress) {
+      return res.status(409).json({
+        success: false,
+        error: 'Reconciliation already in progress'
+      });
+    }
+    // Trigger reconciliation and wait for result
+    const result = await reconciliationService.reconcile();
+    res.json({
+      success: true,
+      message: 'Reconciliation complete',
+      data: result,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
   }
 });
 
-const PORT = config.port;
-app.listen(PORT, () => {
-  console.log(`Stellar Micro-Donation API running on port ${PORT}`);
-  console.log(`Network: ${config.network}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
-  
-  // Start the recurring donation scheduler
-  recurringDonationScheduler.start();
+// Admin reconcile endpoint (canonical path)
+app.post('/admin/reconcile', require('../middleware/rbac').requireAdmin(), async (req, res, next) => {
+  try {
+    if (reconciliationService.reconciliationInProgress) {
+      return res.status(409).json({
+        success: false,
+        error: 'Reconciliation already in progress'
+      });
+    }
+    const result = await reconciliationService.reconcile();
+    res.json({
+      success: true,
+      message: 'Reconciliation complete',
+      data: result,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 
-  // Start SSE manager heartbeat
-  sseManager.start();
+// Admin sync endpoint — triggers immediate transaction sync for all wallets
+app.post('/admin/sync', require('../middleware/rbac').requireAdmin(), async (req, res, next) => {
+  try {
+    const result = await transactionSyncScheduler.syncAllWallets();
+    res.json({
+      success: true,
+      message: 'Transaction sync complete',
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 
-  // Start network status monitoring
-  const networkStatusService = new NetworkStatusService({ horizonUrl: config.horizonUrl });
-  networkStatusService.on('network.degraded', (status) => {
-    console.warn('[NetworkStatus] network.degraded event:', JSON.stringify(status));
+// Orphaned transactions stats (admin only)
+app.get('/admin/orphaned-transactions', require('../middleware/rbac').requireAdmin(), async (req, res, next) => {
+  try {
+    const rows = await Database.query(
+      'SELECT id, senderId, receiverId, amount, memo, timestamp, stellar_tx_id FROM transactions WHERE is_orphan = 1 ORDER BY timestamp DESC',
+      []
+    );
+    res.json({
+      success: true,
+      data: {
+        count: rows.length,
+        transactions: rows,
+        lifetimeDetected: reconciliationService.getOrphanedTransactionCount(),
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 404 handler (must be after all routes)
+app.use(notFoundHandler);
+
+// Global error handler
+app.use(errorHandler);
+
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  log.error('APP', 'Unhandled promise rejection', {
+    reason,
+    promise,
+    timestamp: new Date().toISOString()
   });
-  setNetworkService(networkStatusService);
-  networkStatusService.start();
 });
 
 const PORT = config.server.port;
@@ -326,22 +528,29 @@ async function startServer() {
       // Attach real-time balance streaming WebSocket
       require('../services/websocketService').attach(server);
 
-      // Start pledge expiry worker
-      require('../workers/expiryWorker').start();
+      // Only start background workers and jobs if not in test environment
+      if (process.env.NODE_ENV !== 'test') {
+        const stopQuotaResetJob = startQuotaResetJob();
+        server.stopQuotaResetJob = stopQuotaResetJob;
 
-      recurringDonationScheduler.start();
-      reconciliationService.start();
-      auditLogRetentionService.start();
-      transactionSyncScheduler.start();
-      
-      // Start quota reset job
-      const stopQuotaResetJob = startQuotaResetJob();
-      server.stopQuotaResetJob = stopQuotaResetJob;
+        // Start pledge expiry worker
+        require('../workers/expiryWorker').start();
 
-      runCleanup(); // Run once on startup
-      cleanupInterval = setInterval(runCleanup, 24 * 60 * 60 * 1000);
+        recurringDonationScheduler.start();
+        reconciliationService.start();
+        auditLogRetentionService.start();
+        transactionSyncScheduler.start();
+        sseManager.start();
+        
+        runCleanup(); // Run once on startup
+        cleanupInterval = setInterval(runCleanup, 24 * 60 * 60 * 1000);
+      }
       
       // Initialize and start network status monitoring
+      networkStatusService.on('network.degraded', (status) => {
+        log.warn('NETWORK_STATUS', 'Network status degraded', { status });
+      });
+
       try {
         await networkStatusService.initialize();
       } catch (err) {
