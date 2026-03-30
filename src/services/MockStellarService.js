@@ -2974,6 +2974,111 @@ class MockStellarService extends StellarServiceInterface {
     const account = sourceSecret.slice(0, 8);
     return (this._thresholds && this._thresholds[account]) || null;
   }
+
+  /**
+   * Invoke a Soroban smart contract method (mock implementation using EscrowContract).
+   * Supports 'deposit' and 'release' methods; all others return success with no events.
+   * @param {string} contractId
+   * @param {string} method
+   * @param {Array} args
+   * @returns {Promise<{ status: string, returnValue: *, transactionHash: string, ledger: number, events: Array }>}
+   */
+  async invokeContract(contractId, method, args) {
+    if (!contractId) throw new Error('contractId is required');
+    if (!method) throw new Error('method is required');
+    if (!Array.isArray(args)) throw new Error('args must be an array');
+
+    if (!this._contracts) this._contracts = {};
+    if (!this._contractEvents) this._contractEvents = {};
+
+    // Lazily create an EscrowContract per contractId (goal defaults to 100)
+    if (!this._contracts[contractId]) {
+      const EscrowContract = require('../contracts/EscrowContract');
+      this._contracts[contractId] = new EscrowContract(args[1] || 100);
+    }
+
+    const contract = this._contracts[contractId];
+    if (!this._contractEvents[contractId]) this._contractEvents[contractId] = [];
+
+    let returnValue = null;
+    let events = [];
+
+    try {
+      if (method === 'deposit') {
+        const [donorId, amount] = args;
+        const result = contract.deposit(donorId, amount);
+        returnValue = result;
+        events = [{
+          contractId,
+          type: 'deposit',
+          topics: ['deposit', donorId],
+          data: { donorId, amount },
+          timestamp: new Date().toISOString(),
+          ledger: Date.now(),
+        }];
+      } else if (method === 'release') {
+        const [recipientId, goal] = args;
+        if (goal !== undefined) this._contracts[contractId]._goalAmount = goal;
+        const result = contract.release(recipientId);
+        returnValue = result;
+        events = result.events;
+      }
+      // Unknown methods: success, no events
+    } catch (err) {
+      return { status: 'error', returnValue: err.message, transactionHash: null, ledger: null, events: [] };
+    }
+
+    const txHash = `mock-contract-tx-${contractId}-${method}-${Date.now()}`;
+    const ledger = Date.now();
+    this._contractEvents[contractId].push(...events);
+
+    return { status: 'success', returnValue, transactionHash: txHash, ledger, events };
+  }
+
+  /**
+   * Simulate a Soroban contract invocation without submitting (dry-run).
+   * @param {string} contractId
+   * @param {string} method
+   * @param {Array} args
+   * @returns {Promise<{ status: string, returnValue: *, cost: Object, footprint: Object }>}
+   */
+  async simulateContractInvocation(contractId, method, args) {
+    if (!contractId) throw new Error('contractId is required');
+    if (!method) throw new Error('method is required');
+    if (!Array.isArray(args)) throw new Error('args must be an array');
+
+    return {
+      status: 'success',
+      returnValue: null,
+      cost: { cpuInsns: '1000', memBytes: '512' },
+      footprint: { readOnly: [], readWrite: [`contract:${contractId}`] },
+    };
+  }
+
+  /**
+   * Read contract data entries (state) for a given contract.
+   * @param {string} contractId
+   * @returns {Promise<Array<{ key: string, value: * }>>}
+   */
+  async getContractState(contractId) {
+    if (!contractId) throw new Error('contractId is required');
+    if (!this._contracts || !this._contracts[contractId]) return [];
+    const state = this._contracts[contractId].getState();
+    return Object.entries(state).map(([key, value]) => ({ key, value }));
+  }
+
+  /**
+   * Retrieve stored contract events for a given contract ID.
+   * @param {string} contractId
+   * @param {number} [limit]
+   * @returns {Promise<Array>}
+   */
+  async getContractEvents(contractId, limit) {
+    if (!contractId) throw new Error('contractId is required');
+    const events = (this._contractEvents && this._contractEvents[contractId]) || [];
+    const sorted = [...events].sort((a, b) => b.ledger - a.ledger);
+    return limit !== undefined ? sorted.slice(0, limit) : sorted;
+  }
 }
 
 module.exports = MockStellarService;

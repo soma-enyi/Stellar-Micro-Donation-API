@@ -2409,6 +2409,59 @@ class StellarService extends StellarServiceInterface {
     }, 'findPaymentPaths');
   }
 
+  /**
+   * Invoke a Soroban smart contract method on-chain.
+   * @param {string} contractId - The contract's Stellar address
+   * @param {string} method - The contract function name to call
+   * @param {Array} args - Arguments to pass to the contract function
+   * @param {string} [sourceSecret] - Secret key of the invoking account
+   * @returns {Promise<{ status: string, returnValue: *, transactionHash: string, ledger: number, events: Array }>}
+   */
+  async invokeContract(contractId, method, args) {
+    if (!contractId) throw new Error('contractId is required');
+    if (!method) throw new Error('method is required');
+    if (!Array.isArray(args)) throw new Error('args must be an array');
+    // Real Soroban invocation would use StellarSdk.SorobanRpc here.
+    // Stub: throws to indicate live network is required.
+    throw new Error('Soroban contract invocation requires a live Soroban RPC connection');
+  }
+
+  /**
+   * Simulate a Soroban contract invocation without submitting to the network.
+   * @param {string} contractId - The contract's Stellar address
+   * @param {string} method - The contract function name to simulate
+   * @param {Array} args - Arguments to pass to the contract function
+   * @returns {Promise<{ status: string, returnValue: *, cost: Object, footprint: Object }>}
+   */
+  async simulateContractInvocation(contractId, method, args) {
+    if (!contractId) throw new Error('contractId is required');
+    if (!method) throw new Error('method is required');
+    if (!Array.isArray(args)) throw new Error('args must be an array');
+    throw new Error('Soroban contract simulation requires a live Soroban RPC connection');
+  }
+
+  /**
+   * Read contract data entries (state) for a given contract.
+   * @param {string} contractId - The contract's Stellar address
+   * @returns {Promise<Array<{ key: string, value: * }>>}
+   */
+  async getContractState(contractId) {
+    if (!contractId) throw new Error('contractId is required');
+    throw new Error('Soroban contract state requires a live Soroban RPC connection');
+  }
+
+  /**
+   * Retrieve stored contract events for a given contract ID.
+   * @param {string} contractId - The contract's Stellar address
+   * @param {number} [limit] - Maximum number of events to return
+   * @returns {Promise<Array>}
+   */
+  async getContractEvents(contractId, limit) {
+    if (!contractId) throw new Error('contractId is required');
+    // Real implementation would query Horizon /effects or Soroban RPC.
+    return [];
+  }
+
 }
 
 module.exports = StellarService;
