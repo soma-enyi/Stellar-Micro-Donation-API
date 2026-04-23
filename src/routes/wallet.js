@@ -22,10 +22,10 @@ const { buildErrorResponse } = require('../utils/validationErrorFormatter');
 // Inflation destination schema for PATCH
 const inflationDestinationSchema = {
   type: 'object',
-  required: ['destination', 'sourceSecret'],
+  required: ['destination', 'signedXDR'],
   properties: {
     destination: { type: 'string' },
-    sourceSecret: { type: 'string' }
+    signedXDR: { type: 'string' }
   }
 };
 
@@ -38,10 +38,10 @@ router.patch(
   asyncHandler(async (req, res, next) => {
     try {
       const { id } = req.params;
-      const { destination, sourceSecret } = req.body;
+      const { destination, signedXDR } = req.body;
       const wallet = await WalletService.getWalletById(id);
       if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
-      const result = await StellarService.setInflationDestination(sourceSecret, destination);
+      const result = await StellarService.submitSignedTransaction(signedXDR);
       // Optionally log audit here
       res.status(200).json({ success: true, inflationDestination: destination, result });
     } catch (err) {
@@ -70,14 +70,14 @@ router.get(
 /**
  * PUT /wallets/:id/inflation-destination
  * Set the inflation destination for a wallet's Stellar account.
- * Body: { destinationPublicKey: string, sourceSecret: string }
+ * Body: { destinationPublicKey: string, signedXDR: string }
  * Requires wallets:write permission.
  */
 router.put('/:id/inflation-destination', checkPermission(PERMISSIONS.WALLETS_UPDATE), walletIdSchema, payloadSizeLimiter(ENDPOINT_LIMITS.wallet), asyncHandler(async (req, res, next) => {
   try {
-    const { destinationPublicKey, sourceSecret } = req.body;
-    if (!destinationPublicKey || !sourceSecret) {
-      return res.status(400).json({ success: false, error: 'Missing required fields: destinationPublicKey, sourceSecret' });
+    const { destinationPublicKey, signedXDR } = req.body;
+    if (!destinationPublicKey || !signedXDR) {
+      return res.status(400).json({ success: false, error: 'Missing required fields: destinationPublicKey, signedXDR' });
     }
     // Validate destination public key format (G...)
     if (!/^G[A-Z2-7]{55}$/.test(destinationPublicKey)) {
@@ -94,7 +94,7 @@ router.put('/:id/inflation-destination', checkPermission(PERMISSIONS.WALLETS_UPD
     const stellarSvc = getStellarService();
     let result;
     try {
-      result = await stellarSvc.setInflationDestination(sourceSecret, destinationPublicKey);
+      result = await stellarSvc.submitSignedTransaction(signedXDR);
     } catch (err) {
       if (err && err.name === 'ValidationError') return next(err);
       return res.status(502).json({ success: false, error: 'Stellar network error while setting inflation destination' });

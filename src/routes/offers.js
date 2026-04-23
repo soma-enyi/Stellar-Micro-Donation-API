@@ -46,7 +46,7 @@ function normaliseAsset(asset) {
  * Create a new DEX sell offer.
  *
  * Body:
- *   sourceSecret  {string} - Seller's Stellar secret key
+ *   signedXDR     {string} - Pre-signed transaction XDR envelope
  *   sellingAsset  {string} - Asset to sell ('XLM' or 'CODE:ISSUER')
  *   buyingAsset   {string} - Asset to buy  ('XLM' or 'CODE:ISSUER')
  *   amount        {string} - Amount of selling asset
@@ -54,23 +54,16 @@ function normaliseAsset(asset) {
  */
 router.post('/', requireApiKey, checkPermission(PERMISSIONS.DONATIONS_CREATE), payloadSizeLimiter(ENDPOINT_LIMITS.default), asyncHandler(async (req, res) => {
   try {
-    const { sourceSecret, sellingAsset, buyingAsset, amount, price } = req.body;
+    const { signedXDR, sellingAsset, buyingAsset, amount, price } = req.body;
 
-    if (!sourceSecret) return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'sourceSecret is required' } });
+    if (!signedXDR) return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'signedXDR is required' } });
     if (!amount) return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'amount is required' } });
     if (!price) return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'price is required' } });
 
     const normSelling = normaliseAsset(sellingAsset);
     const normBuying = normaliseAsset(buyingAsset);
 
-    const result = await stellarService.createOffer({
-      sourceSecret,
-      sellingAsset: normSelling,
-      buyingAsset: normBuying,
-      amount: amount.toString(),
-      price: price.toString(),
-      offerId: 0,
-    });
+    const result = await stellarService.submitSignedTransaction(signedXDR);
 
     // Persist metadata for listing
     offerStore.set(result.offerId, {
@@ -106,7 +99,7 @@ router.get('/', requireApiKey, checkPermission(PERMISSIONS.DONATIONS_READ), (req
  * Cancel an existing DEX offer.
  *
  * Body:
- *   sourceSecret  {string} - Seller's Stellar secret key
+ *   signedXDR     {string} - Pre-signed transaction XDR envelope
  *   sellingAsset  {string} - Asset being sold in the offer
  *   buyingAsset   {string} - Asset being bought in the offer
  */
@@ -115,13 +108,13 @@ router.delete('/:id', requireApiKey, checkPermission(PERMISSIONS.DONATIONS_CREAT
     const offerId = parseInt(req.params.id, 10);
     if (isNaN(offerId)) return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'Offer ID must be an integer' } });
 
-    const { sourceSecret, sellingAsset, buyingAsset } = req.body;
-    if (!sourceSecret) return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'sourceSecret is required' } });
+    const { signedXDR, sellingAsset, buyingAsset } = req.body;
+    if (!signedXDR) return res.status(400).json({ success: false, error: { code: 'VALIDATION_ERROR', message: 'signedXDR is required' } });
 
     const normSelling = normaliseAsset(sellingAsset);
     const normBuying = normaliseAsset(buyingAsset);
 
-    const result = await stellarService.cancelOffer({ sourceSecret, sellingAsset: normSelling, buyingAsset: normBuying, offerId });
+    const result = await stellarService.submitSignedTransaction(signedXDR);
 
     const stored = offerStore.get(offerId);
     if (stored) stored.status = 'cancelled';

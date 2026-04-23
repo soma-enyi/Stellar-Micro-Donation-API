@@ -29,6 +29,30 @@ const {
 
 class StellarService extends StellarServiceInterface {
       /**
+       * Submit a pre-signed transaction XDR envelope to the Stellar network.
+       * @param {string} signedXDR - Base64-encoded signed transaction envelope XDR
+       * @returns {Promise<{transactionId: string, hash: string, ledger: number}>}
+       */
+      async submitSignedTransaction(signedXDR) {
+        return StellarErrorHandler.wrap(async () => {
+          if (!signedXDR || typeof signedXDR !== 'string') {
+            const { ValidationError } = require('../utils/errors');
+            throw new ValidationError('signedXDR must be a non-empty string');
+          }
+          const transaction = StellarSdk.TransactionBuilder.fromXDR(signedXDR, this.networkPassphrase);
+          const response = await this._executeWithRetry(
+            () => this.server.submitTransaction(transaction),
+            'submitSignedTransaction'
+          );
+          return {
+            transactionId: response.id,
+            hash: response.hash,
+            ledger: response.ledger,
+          };
+        }, 'submitSignedTransaction');
+      }
+
+      /**
        * List claimable balances claimable by the given public key.
        * @param {string} publicKey - Stellar public key
        * @returns {Promise<Array>} List of claimable balances

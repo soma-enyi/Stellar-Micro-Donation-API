@@ -29,6 +29,24 @@ const NATIVE_ASSET = { type: 'native', code: 'XLM', issuer: null };
 
 class MockStellarService extends StellarServiceInterface {
     /**
+     * Submit a pre-signed transaction XDR envelope to the (mock) network.
+     * @param {string} signedXDR - Base64-encoded signed transaction envelope XDR
+     * @returns {Promise<{transactionId: string, ledger: number, hash: string}>}
+     */
+    async submitSignedTransaction(signedXDR) {
+      await this._simulateNetworkDelay();
+      this._checkRateLimit();
+      this._simulateFailure();
+      if (!signedXDR || typeof signedXDR !== 'string') {
+        throw new ValidationError('signedXDR must be a non-empty string');
+      }
+      const transactionId = `mock_tx_${crypto.randomBytes(8).toString('hex')}`;
+      const hash = `mock_hash_${crypto.randomBytes(16).toString('hex')}`;
+      const ledger = Math.floor(Math.random() * 1000000) + 1;
+      return { transactionId, hash, ledger, offerId: Math.floor(Math.random() * 100000) + 1 };
+    }
+
+    /**
      * Set the inflation destination for a mock wallet.
      * @param {string} sourceSecret - Secret key of the source account
      * @param {string} destinationPublicKey - Public key to set as inflation destination

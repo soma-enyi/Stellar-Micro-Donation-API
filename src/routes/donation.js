@@ -545,7 +545,7 @@ router.post('/:id/refund', requireApiKey, checkPermission(PERMISSIONS.DONATIONS_
 const createClaimableSchema = validateSchema({
   body: {
     fields: {
-      sourceSecret: { type: 'string', required: true },
+      signedXDR: { type: 'string', required: true },
       amount: { type: 'numberString', required: true, min: 0.0000001 },
       claimants: { type: 'array', required: true },
       predicate: { type: 'object', required: false, nullable: true },
@@ -556,7 +556,7 @@ const createClaimableSchema = validateSchema({
 /**
  * POST /donations/claimable
  * Create a claimable balance (XLM held until claimed by an eligible account).
- * Supports time-based predicates (notBefore / notAfter as Unix ms timestamps).
+ * The transaction must be signed client-side and submitted as a pre-signed XDR envelope.
  */
 router.post(
   '/claimable',
@@ -566,7 +566,7 @@ router.post(
   createClaimableSchema,
   asyncHandler(async (req, res, next) => {
     try {
-      const { sourceSecret, amount, claimants, predicate } = req.body;
+      const { signedXDR, amount, claimants, predicate } = req.body;
 
       if (!Array.isArray(claimants) || claimants.length === 0) {
         return res.status(400).json({
@@ -575,12 +575,7 @@ router.post(
         });
       }
 
-      const result = await stellarService.createClaimableBalance({
-        sourceSecret,
-        amount,
-        claimants,
-        predicate: predicate || null,
-      });
+      const result = await stellarService.submitSignedTransaction(signedXDR);
 
       // Store claimable balance ID in transaction records
       Transaction.create({
@@ -606,6 +601,7 @@ router.post(
 /**
  * POST /donations/claimable/:id/claim
  * Claim a claimable balance by its ID.
+ * The claim transaction must be signed client-side and submitted as a pre-signed XDR envelope.
  */
 router.post(
   '/claimable/:id/claim',
@@ -615,19 +611,16 @@ router.post(
   asyncHandler(async (req, res, next) => {
     try {
       const { id } = req.params;
-      const { claimantSecret } = req.body;
+      const { signedXDR } = req.body;
 
-      if (!claimantSecret) {
+      if (!signedXDR) {
         return res.status(400).json({
           success: false,
-          error: { code: 'VALIDATION_ERROR', message: 'claimantSecret is required' },
+          error: { code: 'VALIDATION_ERROR', message: 'signedXDR is required' },
         });
       }
 
-      const result = await stellarService.claimBalance({
-        balanceId: id,
-        claimantSecret,
-      });
+      const result = await stellarService.submitSignedTransaction(signedXDR);
 
       if (req.markLifecycleStage) req.markLifecycleStage(LIFECYCLE_STAGES.PROCESSED);
 
@@ -687,7 +680,7 @@ router.get('/:id/impact', checkPermission(PERMISSIONS.DONATIONS_READ), donationI
 const crossAssetSchema = validateSchema({
   body: {
     fields: {
-      sourceSecret: { type: 'string', required: true },
+      signedXDR: { type: 'string', required: true },
       sendAsset: { types: ['string', 'object'], required: true },
       destPublicKey: { type: 'string', required: true },
       destAsset: { types: ['string', 'object'], required: true },
@@ -725,13 +718,12 @@ const crossAssetPathsSchema = validateSchema({
  * POST /donations/cross-asset
  * Execute a cross-asset donation via Stellar DEX path payment.
  *
- * Strict-send: provide sendAmount — sends exactly that amount, recipient gets at least
- *   sendAmount * (1 - slippageTolerance) of destAsset.
- * Strict-receive: provide destAmount — recipient gets exactly that amount, sender spends
- *   at most destAmount / rate * (1 + slippageTolerance) of sendAsset.
+ * The transaction must be built and signed client-side, then submitted as a
+ * pre-signed XDR envelope. Use GET /donations/cross-asset/paths to discover
+ * available conversion paths before building the transaction.
  *
  * Body:
- *   - sourceSecret {string} required
+ *   - signedXDR {string} required — pre-signed transaction XDR envelope
  *   - sendAsset {string|object} required — "native" or {code, issuer}
  *   - sendAmount {string} — for strict-send
  *   - destPublicKey {string} required
@@ -743,30 +735,19 @@ const crossAssetPathsSchema = validateSchema({
 router.post('/cross-asset', payloadSizeLimiter(ENDPOINT_LIMITS.singleDonation), donationRateLimiter, requireApiKey, requireIdempotency, crossAssetSchema, asyncHandler(async (req, res, next) => {
   try {
     const {
-      sourceSecret,
-      sendAsset: rawSendAsset,
-      sendAmount,
+      signedXDR,
       destPublicKey,
-      destAsset: rawDestAsset,
-      destAmount,
-      slippageTolerance = 0.01,
-      memo,
     } = req.body;
 
-    if (!sourceSecret || !destPublicKey) {
+    if (!signedXDR || !destPublicKey) {
       return res.status(400).json(
         buildErrorResponse([{ code: 'MISSING_REQUIRED_FIELDS', receivedValue: null }])
       );
     }
 
     const stellarService = getStellarService();
-    const sendAsset = parseAssetInput(rawSendAsset);
-    const destAsset = parseAssetInput(rawDestAsset);
 
-    const result = await stellarService.pathPayment(
-      sourceSecret, sendAsset, sendAmount, destPublicKey, destAsset, destAmount,
-      { slippageTolerance, memo }
-    );
+    const result = await stellarService.submitSignedTransaction(signedXDR);
 
     return res.status(201).json({ success: true, data: result });
   } catch (error) {

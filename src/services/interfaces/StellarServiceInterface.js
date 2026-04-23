@@ -45,6 +45,16 @@ class StellarServiceInterface {
     throw new Error('getTransaction() must be implemented');
   }
 
+  /**
+   * Submit a pre-signed transaction XDR envelope to the Stellar network.
+   * @param {string} _signedXDR - Base64-encoded signed transaction envelope XDR
+   * @returns {Promise<{transactionId: string, hash: string, ledger: number}>}
+   */
+  async submitSignedTransaction(_signedXDR) {
+    void _signedXDR;
+    throw new Error('submitSignedTransaction() must be implemented');
+  }
+
   async buildAndSubmitFeeBumpTransaction(envelopeXdr, newFeeStroops, feeSourceSecret) {
     throw new Error('buildAndSubmitFeeBumpTransaction() must be implemented');
   }
