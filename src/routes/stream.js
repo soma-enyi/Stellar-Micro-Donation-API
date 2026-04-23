@@ -328,16 +328,34 @@ router.get('/schedules', checkPermission(PERMISSIONS.STREAM_READ), asyncHandler(
  * POST /stream/schedules/:id/pause
  * Pause an active recurring donation schedule.
  * Returns 409 if the schedule is already paused.
+ * Authorization: Only the donor who created the schedule or an admin can pause it
  */
 router.post('/schedules/:id/pause', checkPermission(PERMISSIONS.STREAM_UPDATE), streamScheduleIdSchema, payloadSizeLimiter(ENDPOINT_LIMITS.stream), asyncHandler(async (req, res, next) => {
   try {
     const schedule = await Database.get(
-      'SELECT id, status FROM recurring_donations WHERE id = ?',
+      `SELECT rd.id, rd.status, donor.publicKey as donorPublicKey
+       FROM recurring_donations rd
+       JOIN users donor ON rd.donorId = donor.id
+       WHERE rd.id = ?`,
       [req.params.id]
     );
 
     if (!schedule) {
       return res.status(404).json({ success: false, error: 'Schedule not found' });
+    }
+
+    // Authorization check: verify ownership or admin role
+    const isAdmin = req.user && req.user.role === 'admin';
+    const userPublicKey = req.user && req.user.subject;
+    
+    if (!isAdmin && userPublicKey !== schedule.donorPublicKey) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'FORBIDDEN',
+          message: 'You do not have permission to pause this schedule. Only the schedule owner or an admin can pause it.'
+        }
+      });
     }
 
     if (schedule.status === SCHEDULE_STATUS.PAUSED) {
@@ -371,16 +389,34 @@ router.post('/schedules/:id/pause', checkPermission(PERMISSIONS.STREAM_UPDATE), 
  * POST /stream/schedules/:id/resume
  * Resume a paused recurring donation schedule.
  * Recalculates nextExecutionDate from now based on frequency.
+ * Authorization: Only the donor who created the schedule or an admin can resume it
  */
 router.post('/schedules/:id/resume', checkPermission(PERMISSIONS.STREAM_UPDATE), streamScheduleIdSchema, payloadSizeLimiter(ENDPOINT_LIMITS.stream), asyncHandler(async (req, res, next) => {
   try {
     const schedule = await Database.get(
-      'SELECT id, status, frequency FROM recurring_donations WHERE id = ?',
+      `SELECT rd.id, rd.status, rd.frequency, donor.publicKey as donorPublicKey
+       FROM recurring_donations rd
+       JOIN users donor ON rd.donorId = donor.id
+       WHERE rd.id = ?`,
       [req.params.id]
     );
 
     if (!schedule) {
       return res.status(404).json({ success: false, error: 'Schedule not found' });
+    }
+
+    // Authorization check: verify ownership or admin role
+    const isAdmin = req.user && req.user.role === 'admin';
+    const userPublicKey = req.user && req.user.subject;
+    
+    if (!isAdmin && userPublicKey !== schedule.donorPublicKey) {
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'FORBIDDEN',
+          message: 'You do not have permission to resume this schedule. Only the schedule owner or an admin can resume it.'
+        }
+      });
     }
 
     if (schedule.status !== SCHEDULE_STATUS.PAUSED) {
@@ -472,11 +508,15 @@ router.get('/schedules/:id', checkPermission(PERMISSIONS.STREAM_READ), streamSch
 /**
  * DELETE /stream/schedules/:id
  * Cancel a recurring donation schedule
+ * Authorization: Only the donor who created the schedule or an admin can cancel it
  */
 router.delete('/schedules/:id', checkPermission(PERMISSIONS.STREAM_DELETE), streamScheduleIdSchema, asyncHandler(async (req, res) => {
   try {
     const schedule = await Database.get(
-      'SELECT id, status FROM recurring_donations WHERE id = ?',
+      `SELECT rd.id, rd.status, donor.publicKey as donorPublicKey
+       FROM recurring_donations rd
+       JOIN users donor ON rd.donorId = donor.id
+       WHERE rd.id = ?`,
       [req.params.id]
     );
 
@@ -487,10 +527,40 @@ router.delete('/schedules/:id', checkPermission(PERMISSIONS.STREAM_DELETE), stre
       });
     }
 
+    // Authorization check: verify ownership or admin role
+    const isAdmin = req.user && req.user.role === 'admin';
+    
+    // For SEP-10 JWT authentication, the subject contains the public key
+    const userPublicKey = req.user && req.user.subject;
+    
+    // Check if the requesting user is the donor or an admin
+    if (!isAdmin && userPublicKey !== schedule.donorPublicKey) {
+      log.warn('STREAM_ROUTE', 'Unauthorized schedule cancellation attempt', {
+        scheduleId: req.params.id,
+        requestingUser: userPublicKey || req.user?.id,
+        scheduleOwner: schedule.donorPublicKey,
+        userRole: req.user?.role
+      });
+      
+      return res.status(403).json({
+        success: false,
+        error: {
+          code: 'FORBIDDEN',
+          message: 'You do not have permission to cancel this schedule. Only the schedule owner or an admin can cancel it.'
+        }
+      });
+    }
+
     await Database.run(
       'UPDATE recurring_donations SET status = ? WHERE id = ?',
       ['cancelled', req.params.id]
     );
+
+    log.info('STREAM_ROUTE', 'Schedule cancelled', {
+      scheduleId: req.params.id,
+      cancelledBy: userPublicKey || req.user?.id,
+      isAdmin
+    });
 
     res.json({
       success: true,
