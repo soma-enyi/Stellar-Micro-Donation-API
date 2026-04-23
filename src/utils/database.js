@@ -37,7 +37,16 @@ const DEFAULT_SLOW_QUERY_THRESHOLD_MS = 100;
 const DEFAULT_SLOW_QUERY_BUFFER_SIZE = 100;
 const MAX_SLOW_QUERY_ENTRIES = 1000;
 const SLOW_QUERY_WINDOW_MS = 24 * 60 * 60 * 1000;
-const DB_PATH = path.join(__dirname, '../../data/stellar_donations.db');
+
+// Resolve database path from environment or use default
+const getDBPath = () => {
+  if (process.env.DB_PATH) {
+    return process.env.DB_PATH;
+  }
+  return path.join(__dirname, '../../data/stellar_donations.db');
+};
+
+const DB_PATH = getDBPath();
 
 class Database {
   static get poolState() {
