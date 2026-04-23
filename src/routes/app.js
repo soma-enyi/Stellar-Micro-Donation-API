@@ -719,12 +719,13 @@ async function startServer() {
           log.error("SHUTDOWN", "Error flushing webhooks", { error: err.message });
         }
 
-        // Stop recurring donation scheduler and wait for running job
+        // Stop recurring donation scheduler and wait for in-progress executions
         try {
-          await recurringDonationScheduler.stopGracefully
-            ? recurringDonationScheduler.stopGracefully()
-            : recurringDonationScheduler.stop();
-          log.info("SHUTDOWN", "Scheduler stopped");
+          const schedulerResult = await recurringDonationScheduler.stopGracefully(timeoutMs);
+          log.info("SHUTDOWN", "Scheduler stopped", {
+            waited: schedulerResult?.waited ?? 0,
+            interrupted: schedulerResult?.interrupted ?? 0,
+          });
         } catch (err) {
           log.error("SHUTDOWN", "Error stopping scheduler", { error: err.message });
         }

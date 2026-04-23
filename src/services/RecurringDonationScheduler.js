@@ -101,38 +101,91 @@ class RecurringDonationScheduler {
   }
 
   /**
-   * Gracefully stop the scheduler, waiting for any running job to complete.
-   * @param {number} [timeoutMs=10000] - Max wait time for running job
-   * @returns {Promise<void>}
+   * Gracefully stop the scheduler, waiting for any in-progress executions to complete.
+   *
+   * - Clears the polling interval immediately so no new executions are started.
+   * - Waits up to `timeoutMs` for all in-progress executions to finish.
+   * - Any executions still running after the timeout are logged as interrupted and
+   *   marked with status 'interrupted' in the DB for manual review.
+   *
+   * @param {number} [timeoutMs=30000] - Max wait time in ms (default 30 s)
+   * @returns {Promise<{waited: number, interrupted: number}>}
    */
-  async stopGracefully(timeoutMs = 10000) {
-    if (!this.isRunning) return;
+  async stopGracefully(timeoutMs = 30000) {
+    if (!this.isRunning) return { waited: 0, interrupted: 0 };
 
     clearInterval(this.intervalId);
     this.intervalId = null;
     this.isRunning = false;
 
     const { correlationId, traceId } = getCorrelationSummary();
+    const inProgressCount = this.executingSchedules.size;
 
-    if (this.executingSchedules.size > 0) {
-      log.info('RECURRING_SCHEDULER', 'Waiting for running jobs to complete', {
-        running: this.executingSchedules.size,
+    if (inProgressCount === 0) {
+      log.info('RECURRING_SCHEDULER', 'Scheduler stopped gracefully', {
+        waited: 0,
+        interrupted: 0,
+        correlationId,
+        traceId,
+      });
+      return { waited: 0, interrupted: 0 };
+    }
+
+    log.info('RECURRING_SCHEDULER', 'Waiting for in-progress executions to complete', {
+      inProgress: inProgressCount,
+      timeoutMs,
+      correlationId,
+      traceId,
+    });
+
+    const deadline = Date.now() + timeoutMs;
+    await new Promise((resolve) => {
+      const check = setInterval(() => {
+        if (this.executingSchedules.size === 0 || Date.now() >= deadline) {
+          clearInterval(check);
+          resolve();
+        }
+      }, 100);
+    });
+
+    const interrupted = this.executingSchedules.size;
+    const waited = inProgressCount - interrupted;
+
+    if (interrupted > 0) {
+      const interruptedIds = [...this.executingSchedules];
+      log.error('RECURRING_SCHEDULER', 'Shutdown timeout reached — executions interrupted', {
+        interrupted,
+        interruptedScheduleIds: interruptedIds,
         correlationId,
         traceId,
       });
 
-      const deadline = Date.now() + timeoutMs;
-      await new Promise((resolve) => {
-        const check = setInterval(() => {
-          if (this.executingSchedules.size === 0 || Date.now() >= deadline) {
-            clearInterval(check);
-            resolve();
-          }
-        }, 100);
-      });
+      // Mark interrupted executions for manual review
+      for (const scheduleId of interruptedIds) {
+        try {
+          await Database.run(
+            `INSERT INTO recurring_donation_logs
+               (scheduleId, status, errorMessage, timestamp)
+             VALUES (?, 'interrupted', 'Execution interrupted by server shutdown', ?)`,
+            [scheduleId, new Date().toISOString()]
+          );
+        } catch (dbErr) {
+          log.error('RECURRING_SCHEDULER', 'Failed to mark interrupted execution', {
+            scheduleId,
+            error: dbErr.message,
+          });
+        }
+      }
     }
 
-    log.info('RECURRING_SCHEDULER', 'Scheduler stopped gracefully', { correlationId, traceId });
+    log.info('RECURRING_SCHEDULER', 'Scheduler stopped gracefully', {
+      waited,
+      interrupted,
+      correlationId,
+      traceId,
+    });
+
+    return { waited, interrupted };
   }
 
   // ─────────────────────────────────────────────────────────────────────────
